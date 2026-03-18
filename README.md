@@ -93,7 +93,7 @@ createdb appbeholder
 ### 2. Build and run
 
 ```bash
-git clone https://github.com/your-org/appbeholder.git
+git clone https://github.com/mi4uu/appbeholder.git
 cd appbeholder
 cargo run -p appbeholder
 ```
@@ -281,4 +281,14 @@ Single binary. PostgreSQL is the only external dependency.
 
 ## License
 
-MIT
+This work is licensed under [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/).
+
+**You are free to:**
+- Share and adapt this software for non-commercial purposes
+
+**Under the following terms:**
+- **Attribution** — Credit to [Michal Lipinski](https://lipinski.work/) with a link to this repository
+- **NonCommercial** — No commercial use without a separate license agreement
+- **ShareAlike** — Derivatives must use the same license
+
+For commercial licensing inquiries, contact the author.
