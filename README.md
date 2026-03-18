@@ -8,6 +8,11 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/mi4uu/appbeholder/actions/workflows/release.yml"><img src="https://github.com/mi4uu/appbeholder/actions/workflows/release.yml/badge.svg" alt="Build & Release" /></a>
+  <a href="https://github.com/mi4uu/appbeholder/releases/latest"><img src="https://img.shields.io/github/v/release/mi4uu/appbeholder?label=latest&sort=date" alt="Latest Release" /></a>
+</p>
+
+<p align="center">
   <a href="#features">Features</a> &bull;
   <a href="#quick-start">Quick Start</a> &bull;
   <a href="#sending-data">Sending Data</a> &bull;
@@ -81,8 +86,9 @@ Track multiple applications across multiple servers. Projects are auto-created o
 
 ### Prerequisites
 
-- Rust 1.75+ (for building)
 - PostgreSQL 14+
+- Linux (amd64 or arm64) — for prebuilt binaries
+- Rust 1.75+ — only if building from source
 
 ### 1. Create the database
 
@@ -90,26 +96,57 @@ Track multiple applications across multiple servers. Projects are auto-created o
 createdb appbeholder
 ```
 
-### 2. Build and run
+### 2a. Download prebuilt binaries (recommended)
+
+Every push to `main` publishes ready-to-run binaries. No Rust toolchain required.
+
+```bash
+# Pick your architecture: linux-amd64 or linux-arm64
+ARCH=linux-amd64
+
+# Download the latest release
+gh release download --repo mi4uu/appbeholder --pattern "appbeholder-${ARCH}" --pattern "appbeholder-agent-${ARCH}" --dir .
+
+# Make executable
+chmod +x appbeholder-${ARCH} appbeholder-agent-${ARCH}
+
+# Run the server
+./appbeholder-${ARCH}
+```
+
+Or download manually from the [Releases page](https://github.com/mi4uu/appbeholder/releases/latest).
+
+Each release includes four binaries:
+
+| Binary | Description |
+|--------|-------------|
+| `appbeholder-linux-amd64` | Server (x86_64) |
+| `appbeholder-linux-arm64` | Server (aarch64/Graviton) |
+| `appbeholder-agent-linux-amd64` | Metrics agent (x86_64) |
+| `appbeholder-agent-linux-arm64` | Metrics agent (aarch64/Graviton) |
+
+### 2b. Build from source
 
 ```bash
 git clone https://github.com/mi4uu/appbeholder.git
 cd appbeholder
-cargo run -p appbeholder
-```
+cargo build --release -p appbeholder
+cargo build --release -p appbeholder-agent
 
-The server starts on `http://beholder.lipinski.work` with all tables auto-created.
+# Run the server
+./target/release/appbeholder
+```
 
 ### 3. Send your first log
 
 ```bash
-curl -X POST http://beholder.lipinski.work/api/v1/logs \
+curl -X POST http://localhost:8080/api/v1/logs \
   -H "Content-Type: application/json" \
   -H "X-Project-Slug: my-app" \
   -d '{"level":"info","message":"Hello from App Beholder!"}'
 ```
 
-Open `http://beholder.lipinski.work` — your project appears automatically and the log is streaming live.
+Open `http://localhost:8080` — your project appears automatically and the log is streaming live.
 
 ## Sending Data
 
@@ -174,7 +211,7 @@ Batch endpoint for system metrics (used by the agent).
 Point your OpenTelemetry SDK exporter at App Beholder:
 
 ```
-OTEL_EXPORTER_OTLP_ENDPOINT=http://beholder.lipinski.work
+OTEL_EXPORTER_OTLP_ENDPOINT=http://your-server:8080
 ```
 
 Supported endpoints:
@@ -186,7 +223,7 @@ Supported endpoints:
 Add a single script tag to automatically capture frontend errors:
 
 ```html
-<script src="http://beholder.lipinski.work/static/beholder.js" data-project="my-app"></script>
+<script src="http://your-server:8080/static/beholder.js" data-project="my-app"></script>
 ```
 
 This automatically captures:
@@ -197,10 +234,23 @@ Errors are sent to `POST /api/v1/errors` with `source: "frontend"` and grouped b
 
 ## Server Metrics Agent
 
-The `appbeholder-agent` binary collects system metrics and sends them to App Beholder.
+The `appbeholder-agent` binary collects system metrics and sends them via OTLP/HTTP.
 
 ```bash
-cargo run -p appbeholder-agent
+# Using prebuilt binary
+./appbeholder-agent-linux-amd64 agent.toml
+
+# Or build from source
+cargo run -p appbeholder-agent -- agent.toml
+```
+
+Create an `agent.toml`:
+
+```toml
+endpoint = "http://localhost:8080"
+service_name = "my-app"
+hostname = "web-1"
+interval_secs = 30
 ```
 
 Collected metrics:
