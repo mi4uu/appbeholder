@@ -1,5 +1,6 @@
-use axum::{extract::State, Json};
-use axum::http::StatusCode;
+use axum::extract::State;
+use axum::http::{HeaderMap, StatusCode};
+use axum::body::Bytes;
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -79,8 +80,25 @@ fn is_valid_id(id: &Option<String>) -> bool {
 
 pub async fn ingest_logs(
     State(state): State<AppState>,
-    Json(req): Json<ExportLogsServiceRequest>,
+    headers: HeaderMap,
+    body: Bytes,
 ) -> Result<StatusCode, (StatusCode, String)> {
+    let content_type = headers.get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown");
+
+    let req: ExportLogsServiceRequest = serde_json::from_slice(&body)
+        .map_err(|e| {
+            let preview = String::from_utf8_lossy(&body[..body.len().min(200)]);
+            tracing::error!(
+                content_type = content_type,
+                body_len = body.len(),
+                body_preview = %preview,
+                error = %e,
+                "Failed to parse OTLP logs request"
+            );
+            (StatusCode::BAD_REQUEST, format!("Invalid JSON: {}. Content-Type: {}", e, content_type))
+        })?;
     let mut log_count = 0;
 
     for resource_log in req.resource_logs {
