@@ -81,6 +81,35 @@ pub async fn delete_project(pool: &Pool, id: Uuid) -> Result<(), Box<dyn std::er
     Ok(())
 }
 
+pub struct HostDetail {
+    pub id: Uuid,
+    pub hostname: String,
+    pub first_seen: DateTime<Utc>,
+    pub last_seen: DateTime<Utc>,
+    pub log_count: i64,
+    pub span_count: i64,
+}
+
+pub async fn list_hosts_detailed(pool: &Pool, project_id: Uuid) -> Result<Vec<HostDetail>, Box<dyn std::error::Error>> {
+    let client = pool.get().await?;
+    let rows = client.query(
+        "SELECT h.id, h.hostname, h.first_seen, h.last_seen,
+                COALESCE((SELECT COUNT(*)::bigint FROM log_entries WHERE host_id = h.id), 0) AS log_count,
+                COALESCE((SELECT COUNT(*)::bigint FROM spans WHERE host_id = h.id), 0) AS span_count
+         FROM hosts h WHERE h.project_id = $1 ORDER BY h.hostname",
+        &[&project_id],
+    ).await?;
+
+    Ok(rows.iter().map(|r| HostDetail {
+        id: r.get(0),
+        hostname: r.get(1),
+        first_seen: r.get(2),
+        last_seen: r.get(3),
+        log_count: r.get(4),
+        span_count: r.get(5),
+    }).collect())
+}
+
 pub async fn list_hosts(pool: &Pool, project_id: Uuid) -> Result<Vec<(Uuid, String)>, Box<dyn std::error::Error>> {
     let client = pool.get().await?;
     let rows = client.query(

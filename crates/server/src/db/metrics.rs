@@ -27,6 +27,33 @@ pub async fn insert_metric(pool: &Pool, entry: &MetricEntry) -> Result<(), Box<d
     Ok(())
 }
 
+pub struct MetricSummary {
+    pub metric_name: String,
+    pub value: f64,
+    pub unit: String,
+    pub host_id: Uuid,
+    pub timestamp: DateTime<Utc>,
+}
+
+pub async fn query_metrics_summary(pool: &Pool, project_id: Uuid) -> Result<Vec<MetricSummary>, Box<dyn std::error::Error>> {
+    let client = pool.get().await?;
+    let rows = client.query(
+        "SELECT DISTINCT ON (metric_name, host_id) metric_name, value, unit, host_id, timestamp
+         FROM metrics WHERE project_id = $1
+         ORDER BY metric_name, host_id, timestamp DESC
+         LIMIT 200",
+        &[&project_id],
+    ).await?;
+
+    Ok(rows.iter().map(|r| MetricSummary {
+        metric_name: r.get(0),
+        value: r.get(1),
+        unit: r.get(2),
+        host_id: r.get(3),
+        timestamp: r.get(4),
+    }).collect())
+}
+
 pub async fn batch_insert_metrics(pool: &Pool, entries: &[MetricEntry]) -> Result<(), Box<dyn std::error::Error>> {
     if entries.is_empty() {
         return Ok(());

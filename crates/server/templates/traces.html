@@ -1,0 +1,44 @@
+<!-- Traces Header -->
+<div class="p-4 border-b border-base-300 flex items-center justify-between">
+    <h2 class="text-lg font-bold">Traces - {{ project_name }}</h2>
+</div>
+
+<!-- Filters -->
+<div class="p-2 border-b border-base-300 flex items-center gap-2 flex-wrap">
+    <select id="status-filter" class="select select-bordered select-xs"
+            hx-get="/api/traces/{{ project_slug }}"
+            hx-target="#trace-entries"
+            hx-include="[id='status-filter'], [id='host-filter'], [id='search-filter']"
+            name="status">
+        <option value="">All Statuses</option>
+        <option value="ok">OK</option>
+        <option value="error">Error</option>
+        <option value="unset">Unset</option>
+    </select>
+
+    <select id="host-filter" class="select select-bordered select-xs"
+            hx-get="/api/traces/{{ project_slug }}"
+            hx-target="#trace-entries"
+            hx-include="[id='status-filter'], [id='host-filter'], [id='search-filter']"
+            name="host_id">
+        <option value="">All Hosts</option>
+        {% for h in hosts %}
+        <option value="{{ h.id }}">{{ h.hostname }}</option>
+        {% endfor %}
+    </select>
+
+    <input id="search-filter" type="text" placeholder="Search span names..."
+           class="input input-bordered input-xs w-64"
+           name="search"
+           hx-get="/api/traces/{{ project_slug }}"
+           hx-target="#trace-entries"
+           hx-include="[id='status-filter'], [id='host-filter'], [id='search-filter']"
+           hx-trigger="keyup changed delay:300ms" />
+</div>
+
+<!-- Traces Table -->
+<div class="flex-1 overflow-y-auto p-4">
+    <div id="trace-entries">
+        {{ traces_html|safe }}
+    </div>
+</div>

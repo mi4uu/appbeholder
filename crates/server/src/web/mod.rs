@@ -5,7 +5,7 @@ use axum::{
 };
 use axum_extra::extract::cookie::SignedCookieJar;
 use askama::Template;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use std::convert::Infallible;
 use uuid::Uuid;
 
@@ -56,12 +56,53 @@ struct LogsTemplate {
 }
 
 #[derive(Template)]
-#[template(path = "placeholder.html")]
-struct PlaceholderTemplate {
-    page_title: String,
-    page_icon: String,
-    page_description: String,
+#[template(path = "traces.html")]
+struct TracesTemplate {
     project_slug: String,
+    project_name: String,
+    hosts: Vec<HostInfo>,
+    traces_html: String,
+}
+
+#[derive(Template)]
+#[template(path = "errors.html")]
+struct ErrorsTemplate {
+    project_slug: String,
+    project_name: String,
+    hosts: Vec<HostInfo>,
+    errors_html: String,
+}
+
+pub struct HostDetailView {
+    pub hostname: String,
+    pub first_seen: String,
+    pub last_seen: String,
+    pub log_count: i64,
+    pub span_count: i64,
+}
+
+#[derive(Template)]
+#[template(path = "hosts.html")]
+struct HostsTemplate {
+    project_slug: String,
+    project_name: String,
+    hosts: Vec<HostDetailView>,
+}
+
+pub struct MetricView {
+    pub metric_name: String,
+    pub value: String,
+    pub unit: String,
+    pub hostname: String,
+    pub timestamp: String,
+}
+
+#[derive(Template)]
+#[template(path = "metrics.html")]
+struct MetricsTemplate {
+    project_slug: String,
+    project_name: String,
+    metrics: Vec<MetricView>,
 }
 
 #[derive(Template)]
@@ -288,7 +329,42 @@ pub async fn logs_page(
     Html(render_page(&format!("Logs - {}", project_name), &pool_projects, &slug, "logs", content))
 }
 
-// --- Placeholder pages for Phase 2-4 ---
+// --- Traces page ---
+
+fn render_trace_row(trace: &db::spans::TraceRow, hostname: &str) -> String {
+    let ts = trace.timestamp.format("%Y-%m-%d %H:%M:%S");
+    let duration = if trace.duration_ms < 1.0 {
+        format!("{:.0}us", trace.duration_ms * 1000.0)
+    } else if trace.duration_ms < 1000.0 {
+        format!("{:.1}ms", trace.duration_ms)
+    } else {
+        format!("{:.2}s", trace.duration_ms / 1000.0)
+    };
+    let status_badge = match trace.status.as_str() {
+        "error" => "badge-error",
+        "ok" => "badge-success",
+        _ => "badge-ghost",
+    };
+    let escaped_name = trace.root_name
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
+    let short_tid = &trace.trace_id[..trace.trace_id.len().min(16)];
+
+    format!(
+        r#"<tr class="hover">
+            <td class="font-mono text-xs">{}</td>
+            <td class="text-sm">{}</td>
+            <td class="text-sm text-center">{}</td>
+            <td class="text-sm font-mono">{}</td>
+            <td><span class="badge {} badge-xs">{}</span></td>
+            <td class="text-xs opacity-70">{}</td>
+            <td class="text-xs opacity-70">{}</td>
+        </tr>"#,
+        short_tid, escaped_name, trace.span_count, duration,
+        status_badge, trace.status.to_uppercase(), hostname, ts
+    )
+}
 
 pub async fn traces_page(
     State(state): State<AppState>,
@@ -296,16 +372,73 @@ pub async fn traces_page(
 ) -> impl IntoResponse {
     let pool_projects = db::projects::list_projects(&state.pool).await.unwrap_or_default();
     let project_name = pool_projects.iter().find(|(_, _, s)| s == &slug).map(|(_, n, _)| n.clone()).unwrap_or_else(|| slug.clone());
+    let project_id = pool_projects.iter().find(|(_, _, s)| s == &slug).map(|(id, _, _)| *id);
 
-    let content = (PlaceholderTemplate {
-        page_title: "Trace Explorer".to_string(),
-        page_icon: "lni lni-bolt".to_string(),
-        page_description: "Distributed trace visualization with waterfall view, span trees, and timing analysis. Coming in Phase 2.".to_string(),
+    let hosts_raw = if let Some(pid) = project_id {
+        db::projects::list_hosts(&state.pool, pid).await.unwrap_or_default()
+    } else {
+        vec![]
+    };
+    let hosts: Vec<HostInfo> = hosts_raw.iter().map(|(id, hostname)| HostInfo {
+        id: id.to_string(),
+        hostname: hostname.clone(),
+    }).collect();
+
+    let traces_html = if let Some(pid) = project_id {
+        let query = db::spans::SpanQuery {
+            project_id: pid,
+            host_id: None,
+            status: None,
+            search: None,
+            limit: 100,
+        };
+        let traces = db::spans::query_traces(&state.pool, &query).await.unwrap_or_default();
+        if traces.is_empty() {
+            r#"<div class="text-center py-12 opacity-60">
+                <i class="lni lni-bolt" style="font-size: 3rem;"></i>
+                <p class="mt-4">No traces received yet. Traces will appear once your application sends OTLP trace data.</p>
+            </div>"#.to_string()
+        } else {
+            let host_map: std::collections::HashMap<Uuid, String> = hosts_raw.iter().cloned().collect();
+            let rows: String = traces.iter().map(|t| {
+                let hostname = host_map.get(&t.host_id).map(|s| s.as_str()).unwrap_or("unknown");
+                render_trace_row(t, hostname)
+            }).collect::<Vec<_>>().join("\n");
+            format!(
+                r#"<div class="overflow-x-auto">
+                    <table class="table table-sm">
+                        <thead>
+                            <tr>
+                                <th>Trace ID</th>
+                                <th>Root Span</th>
+                                <th>Spans</th>
+                                <th>Duration</th>
+                                <th>Status</th>
+                                <th>Host</th>
+                                <th>Time</th>
+                            </tr>
+                        </thead>
+                        <tbody>{}</tbody>
+                    </table>
+                </div>"#,
+                rows
+            )
+        }
+    } else {
+        String::new()
+    };
+
+    let content = (TracesTemplate {
         project_slug: slug.clone(),
+        project_name: project_name.clone(),
+        hosts,
+        traces_html,
     }).render().unwrap_or_default();
 
     Html(render_page(&format!("Traces - {}", project_name), &pool_projects, &slug, "traces", content))
 }
+
+// --- Errors page ---
 
 pub async fn errors_page(
     State(state): State<AppState>,
@@ -313,16 +446,55 @@ pub async fn errors_page(
 ) -> impl IntoResponse {
     let pool_projects = db::projects::list_projects(&state.pool).await.unwrap_or_default();
     let project_name = pool_projects.iter().find(|(_, _, s)| s == &slug).map(|(_, n, _)| n.clone()).unwrap_or_else(|| slug.clone());
+    let project_id = pool_projects.iter().find(|(_, _, s)| s == &slug).map(|(id, _, _)| *id);
 
-    let content = (PlaceholderTemplate {
-        page_title: "Error Tracking".to_string(),
-        page_icon: "lni lni-warning".to_string(),
-        page_description: "Errors grouped by fingerprint with occurrence counts, stack traces, and trend sparklines. Coming in Phase 3.".to_string(),
+    let hosts_raw = if let Some(pid) = project_id {
+        db::projects::list_hosts(&state.pool, pid).await.unwrap_or_default()
+    } else {
+        vec![]
+    };
+    let hosts: Vec<HostInfo> = hosts_raw.iter().map(|(id, hostname)| HostInfo {
+        id: id.to_string(),
+        hostname: hostname.clone(),
+    }).collect();
+
+    let errors_html = if let Some(pid) = project_id {
+        let query = db::logs::LogQuery {
+            project_id: pid,
+            level: Some("error".to_string()),
+            host_id: None,
+            search: None,
+            limit: 100,
+            before: None,
+        };
+        let logs = db::logs::query_logs(&state.pool, &query).await.unwrap_or_default();
+        if logs.is_empty() {
+            r#"<div class="text-center py-12 opacity-60">
+                <i class="lni lni-warning" style="font-size: 3rem;"></i>
+                <p class="mt-4">No errors found. That's a good thing!</p>
+            </div>"#.to_string()
+        } else {
+            let host_map: std::collections::HashMap<Uuid, String> = hosts_raw.iter().cloned().collect();
+            logs.iter().rev().map(|l| {
+                let hostname = host_map.get(&l.host_id).map(|s| s.as_str()).unwrap_or("unknown");
+                crate::api::logs::render_log_row(l, hostname)
+            }).collect::<Vec<_>>().join("\n")
+        }
+    } else {
+        String::new()
+    };
+
+    let content = (ErrorsTemplate {
         project_slug: slug.clone(),
+        project_name: project_name.clone(),
+        hosts,
+        errors_html,
     }).render().unwrap_or_default();
 
     Html(render_page(&format!("Errors - {}", project_name), &pool_projects, &slug, "errors", content))
 }
+
+// --- Metrics page ---
 
 pub async fn metrics_page(
     State(state): State<AppState>,
@@ -330,16 +502,38 @@ pub async fn metrics_page(
 ) -> impl IntoResponse {
     let pool_projects = db::projects::list_projects(&state.pool).await.unwrap_or_default();
     let project_name = pool_projects.iter().find(|(_, _, s)| s == &slug).map(|(_, n, _)| n.clone()).unwrap_or_else(|| slug.clone());
+    let project_id = pool_projects.iter().find(|(_, _, s)| s == &slug).map(|(id, _, _)| *id);
 
-    let content = (PlaceholderTemplate {
-        page_title: "Metrics Dashboard".to_string(),
-        page_icon: "lni lni-bar-chart".to_string(),
-        page_description: "CPU, memory, disk, network charts with process-level metrics and error correlation overlay. Coming in Phase 4.".to_string(),
+    let hosts_raw = if let Some(pid) = project_id {
+        db::projects::list_hosts(&state.pool, pid).await.unwrap_or_default()
+    } else {
+        vec![]
+    };
+    let host_map: std::collections::HashMap<Uuid, String> = hosts_raw.iter().cloned().collect();
+
+    let metrics: Vec<MetricView> = if let Some(pid) = project_id {
+        let summaries = db::metrics::query_metrics_summary(&state.pool, pid).await.unwrap_or_default();
+        summaries.iter().map(|m| MetricView {
+            metric_name: m.metric_name.clone(),
+            value: format!("{:.4}", m.value),
+            unit: m.unit.clone(),
+            hostname: host_map.get(&m.host_id).cloned().unwrap_or_else(|| "unknown".to_string()),
+            timestamp: m.timestamp.format("%Y-%m-%d %H:%M:%S").to_string(),
+        }).collect()
+    } else {
+        vec![]
+    };
+
+    let content = (MetricsTemplate {
         project_slug: slug.clone(),
+        project_name: project_name.clone(),
+        metrics,
     }).render().unwrap_or_default();
 
     Html(render_page(&format!("Metrics - {}", project_name), &pool_projects, &slug, "metrics", content))
 }
+
+// --- Hosts page ---
 
 pub async fn hosts_page(
     State(state): State<AppState>,
@@ -347,12 +541,25 @@ pub async fn hosts_page(
 ) -> impl IntoResponse {
     let pool_projects = db::projects::list_projects(&state.pool).await.unwrap_or_default();
     let project_name = pool_projects.iter().find(|(_, _, s)| s == &slug).map(|(_, n, _)| n.clone()).unwrap_or_else(|| slug.clone());
+    let project_id = pool_projects.iter().find(|(_, _, s)| s == &slug).map(|(id, _, _)| *id);
 
-    let content = (PlaceholderTemplate {
-        page_title: "Hosts".to_string(),
-        page_icon: "lni lni-server".to_string(),
-        page_description: "Host overview with per-host metrics, logs, and traces. Coming in Phase 4.".to_string(),
+    let hosts: Vec<HostDetailView> = if let Some(pid) = project_id {
+        let details = db::projects::list_hosts_detailed(&state.pool, pid).await.unwrap_or_default();
+        details.iter().map(|h| HostDetailView {
+            hostname: h.hostname.clone(),
+            first_seen: h.first_seen.format("%Y-%m-%d %H:%M").to_string(),
+            last_seen: h.last_seen.format("%Y-%m-%d %H:%M").to_string(),
+            log_count: h.log_count,
+            span_count: h.span_count,
+        }).collect()
+    } else {
+        vec![]
+    };
+
+    let content = (HostsTemplate {
         project_slug: slug.clone(),
+        project_name: project_name.clone(),
+        hosts,
     }).render().unwrap_or_default();
 
     Html(render_page(&format!("Hosts - {}", project_name), &pool_projects, &slug, "hosts", content))
@@ -360,10 +567,23 @@ pub async fn hosts_page(
 
 // --- API endpoints ---
 
+fn empty_string_as_none<'de, D: Deserializer<'de>>(de: D) -> Result<Option<String>, D::Error> {
+    let s: Option<String> = Option::deserialize(de)?;
+    Ok(s.filter(|v| !v.is_empty()))
+}
+
+fn empty_string_as_none_uuid<'de, D: Deserializer<'de>>(de: D) -> Result<Option<Uuid>, D::Error> {
+    let s: Option<String> = Option::deserialize(de)?;
+    Ok(s.filter(|v| !v.is_empty()).and_then(|v| v.parse::<Uuid>().ok()))
+}
+
 #[derive(Deserialize)]
 pub struct LogsQuery {
+    #[serde(default, deserialize_with = "empty_string_as_none")]
     level: Option<String>,
+    #[serde(default, deserialize_with = "empty_string_as_none_uuid")]
     host_id: Option<Uuid>,
+    #[serde(default, deserialize_with = "empty_string_as_none")]
     search: Option<String>,
 }
 
@@ -392,6 +612,119 @@ pub async fn logs_data(
     };
 
     let logs = db::logs::query_logs(&state.pool, &query).await.unwrap_or_default();
+    let html: String = logs.iter().rev().map(|l| {
+        let hostname = host_map.get(&l.host_id).map(|s| s.as_str()).unwrap_or("unknown");
+        crate::api::logs::render_log_row(l, hostname)
+    }).collect::<Vec<_>>().join("\n");
+
+    Html(html)
+}
+
+#[derive(Deserialize)]
+pub struct TracesQuery {
+    #[serde(default, deserialize_with = "empty_string_as_none")]
+    status: Option<String>,
+    #[serde(default, deserialize_with = "empty_string_as_none_uuid")]
+    host_id: Option<Uuid>,
+    #[serde(default, deserialize_with = "empty_string_as_none")]
+    search: Option<String>,
+}
+
+pub async fn traces_data(
+    State(state): State<AppState>,
+    Path(slug): Path<String>,
+    Query(params): Query<TracesQuery>,
+) -> impl IntoResponse {
+    let pool_projects = db::projects::list_projects(&state.pool).await.unwrap_or_default();
+    let project_id = pool_projects.iter().find(|(_, _, s)| s == &slug).map(|(id, _, _)| *id);
+
+    let Some(pid) = project_id else {
+        return Html(String::new());
+    };
+
+    let hosts = db::projects::list_hosts(&state.pool, pid).await.unwrap_or_default();
+    let host_map: std::collections::HashMap<Uuid, String> = hosts.into_iter().collect();
+
+    let query = db::spans::SpanQuery {
+        project_id: pid,
+        host_id: params.host_id,
+        status: params.status,
+        search: params.search,
+        limit: 100,
+    };
+
+    let traces = db::spans::query_traces(&state.pool, &query).await.unwrap_or_default();
+    if traces.is_empty() {
+        return Html(r#"<div class="text-center py-12 opacity-60">
+            <p>No matching traces found.</p>
+        </div>"#.to_string());
+    }
+
+    let rows: String = traces.iter().map(|t| {
+        let hostname = host_map.get(&t.host_id).map(|s| s.as_str()).unwrap_or("unknown");
+        render_trace_row(t, hostname)
+    }).collect::<Vec<_>>().join("\n");
+
+    Html(format!(
+        r#"<div class="overflow-x-auto">
+            <table class="table table-sm">
+                <thead>
+                    <tr>
+                        <th>Trace ID</th>
+                        <th>Root Span</th>
+                        <th>Spans</th>
+                        <th>Duration</th>
+                        <th>Status</th>
+                        <th>Host</th>
+                        <th>Time</th>
+                    </tr>
+                </thead>
+                <tbody>{}</tbody>
+            </table>
+        </div>"#,
+        rows
+    ))
+}
+
+#[derive(Deserialize)]
+pub struct ErrorsQuery {
+    #[serde(default, deserialize_with = "empty_string_as_none_uuid")]
+    host_id: Option<Uuid>,
+    #[serde(default, deserialize_with = "empty_string_as_none")]
+    search: Option<String>,
+}
+
+pub async fn errors_data(
+    State(state): State<AppState>,
+    Path(slug): Path<String>,
+    Query(params): Query<ErrorsQuery>,
+) -> impl IntoResponse {
+    let pool_projects = db::projects::list_projects(&state.pool).await.unwrap_or_default();
+    let project_id = pool_projects.iter().find(|(_, _, s)| s == &slug).map(|(id, _, _)| *id);
+
+    let Some(pid) = project_id else {
+        return Html(String::new());
+    };
+
+    let hosts = db::projects::list_hosts(&state.pool, pid).await.unwrap_or_default();
+    let host_map: std::collections::HashMap<Uuid, String> = hosts.into_iter().collect();
+
+    let query = db::logs::LogQuery {
+        project_id: pid,
+        level: Some("error".to_string()),
+        host_id: params.host_id,
+        search: params.search,
+        limit: 100,
+        before: None,
+    };
+
+    let logs = db::logs::query_logs(&state.pool, &query).await.unwrap_or_default();
+    if logs.is_empty() {
+        return Html(r#"<div class="text-center py-12 opacity-60">
+            <p>No matching errors found.</p>
+        </div>"#.to_string());
+    }
+
     let html: String = logs.iter().rev().map(|l| {
         let hostname = host_map.get(&l.host_id).map(|s| s.as_str()).unwrap_or("unknown");
         crate::api::logs::render_log_row(l, hostname)
