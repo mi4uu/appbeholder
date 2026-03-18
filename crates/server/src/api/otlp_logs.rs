@@ -99,6 +99,15 @@ pub async fn ingest_logs(
             );
             (StatusCode::BAD_REQUEST, format!("Invalid JSON: {}. Content-Type: {}", e, content_type))
         })?;
+
+    let resource_count = req.resource_logs.len();
+    tracing::debug!(
+        content_type = content_type,
+        body_len = body.len(),
+        resource_logs_count = resource_count,
+        "OTLP logs request parsed successfully"
+    );
+
     let mut log_count = 0;
 
     for resource_log in req.resource_logs {
@@ -118,11 +127,17 @@ pub async fn ingest_logs(
         // Get or create project and host
         let project_id = db::projects::get_or_create_project(&state.pool, &service_name)
             .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            .map_err(|e| {
+                tracing::error!(error = %e, service_name = %service_name, "Failed to get/create project");
+                (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+            })?;
 
         let host_id = db::projects::get_or_create_host(&state.pool, project_id, &hostname)
             .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            .map_err(|e| {
+                tracing::error!(error = %e, hostname = %hostname, "Failed to get/create host");
+                (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+            })?;
 
         // Process log records
         for scope_log in resource_log.scope_logs {
@@ -165,7 +180,16 @@ pub async fn ingest_logs(
 
                 insert_log(&state.pool, &entry)
                     .await
-                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+                    .map_err(|e| {
+                        tracing::error!(
+                            error = %e,
+                            timestamp = %entry.timestamp,
+                            level = %entry.level,
+                            message = %entry.message.chars().take(100).collect::<String>(),
+                            "Failed to insert log entry"
+                        );
+                        (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+                    })?;
 
                 // Publish to SSE
                 let html = render_log_row(&entry, &hostname);
