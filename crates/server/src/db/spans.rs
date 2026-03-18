@@ -57,7 +57,7 @@ pub async fn query_traces(pool: &Pool, query: &SpanQuery) -> Result<Vec<TraceRow
     let mut sql = String::from(
         "SELECT trace_id, MIN(name) AS root_name, COUNT(*)::bigint AS span_count,
                 MAX(duration_ms) AS duration_ms, MAX(status) AS status,
-                MIN(timestamp) AS timestamp, MIN(host_id) AS host_id
+                MIN(timestamp) AS timestamp, MIN(host_id::text)::uuid AS host_id
          FROM spans WHERE project_id = $1"
     );
     let mut param_idx = 2u32;
