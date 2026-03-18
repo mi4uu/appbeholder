@@ -28,8 +28,8 @@ pub async fn auth_middleware(
         return next.run(request).await;
     }
 
-    // API endpoints: check X-Api-Password header
-    if path.starts_with("/api/") {
+    // API and OTLP endpoints: check X-Api-Password header
+    if path.starts_with("/api/") || path.starts_with("/v1/") {
         if let Some(api_pw) = request.headers().get("X-Api-Password") {
             if let Ok(pw_str) = api_pw.to_str() {
                 if pw_str == expected_password {
