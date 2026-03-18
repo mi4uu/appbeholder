@@ -72,18 +72,18 @@ cd appbeholder
 cargo run -p appbeholder
 ```
 
-The server starts on `http://localhost:8080` with all tables auto-created.
+The server starts on `http://beholder.lipinski.work` with all tables auto-created.
 
 ### 3. Send your first log
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/logs \
+curl -X POST http://beholder.lipinski.work/api/v1/logs \
   -H "Content-Type: application/json" \
   -H "X-Project-Slug: my-app" \
   -d '{"level":"info","message":"Hello from App Beholder!"}'
 ```
 
-Open `http://localhost:8080` — your project appears automatically and the log is streaming live.
+Open `http://beholder.lipinski.work` — your project appears automatically and the log is streaming live.
 
 ## Sending Data
 
@@ -148,7 +148,7 @@ Batch endpoint for system metrics (used by the agent).
 Point your OpenTelemetry SDK exporter at App Beholder:
 
 ```
-OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:8080
+OTEL_EXPORTER_OTLP_ENDPOINT=http://beholder.lipinski.work
 ```
 
 Supported endpoints:
@@ -160,7 +160,7 @@ Supported endpoints:
 Add a single script tag to automatically capture frontend errors:
 
 ```html
-<script src="http://localhost:8080/static/beholder.js" data-project="my-app"></script>
+<script src="http://beholder.lipinski.work/static/beholder.js" data-project="my-app"></script>
 ```
 
 This automatically captures:
