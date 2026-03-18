@@ -35,8 +35,10 @@ pub struct ScopeLogs {
 
 #[derive(Debug, Deserialize)]
 pub struct LogRecord {
-    #[serde(rename = "timeUnixNano")]
+    #[serde(rename = "timeUnixNano", default)]
     pub time_unix_nano: String,
+    #[serde(rename = "observedTimeUnixNano", default)]
+    pub observed_time_unix_nano: String,
     #[serde(rename = "severityNumber", default)]
     pub severity_number: i32,
     #[serde(rename = "severityText", default)]
@@ -100,14 +102,6 @@ pub async fn ingest_logs(
             (StatusCode::BAD_REQUEST, format!("Invalid JSON: {}. Content-Type: {}", e, content_type))
         })?;
 
-    let resource_count = req.resource_logs.len();
-    tracing::debug!(
-        content_type = content_type,
-        body_len = body.len(),
-        resource_logs_count = resource_count,
-        "OTLP logs request parsed successfully"
-    );
-
     let mut log_count = 0;
 
     for resource_log in req.resource_logs {
@@ -142,7 +136,18 @@ pub async fn ingest_logs(
         // Process log records
         for scope_log in resource_log.scope_logs {
             for record in scope_log.log_records {
-                let timestamp = nanos_to_datetime(&record.time_unix_nano);
+                // OTLP spec: timeUnixNano can be "0" (not set), use observedTimeUnixNano as fallback
+                let timestamp = {
+                    let t = &record.time_unix_nano;
+                    let o = &record.observed_time_unix_nano;
+                    if !t.is_empty() && t != "0" {
+                        nanos_to_datetime(t)
+                    } else if !o.is_empty() && o != "0" {
+                        nanos_to_datetime(o)
+                    } else {
+                        chrono::Utc::now()
+                    }
+                };
                 let level = severity_to_level(record.severity_number, record.severity_text);
                 let message = record
                     .body
