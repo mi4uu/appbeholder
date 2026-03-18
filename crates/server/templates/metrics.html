@@ -62,7 +62,7 @@
         <!-- Network I/O -->
         <div class="card bg-base-200 shadow-sm">
             <div class="card-body p-4">
-                <h3 class="card-title text-sm">Network I/O</h3>
+                <h3 class="card-title text-sm">Network I/O (rate)</h3>
                 <div id="chart-net" class="w-full" style="height: 200px;"></div>
             </div>
         </div>
@@ -91,22 +91,36 @@ let isLive = true;
 let sseBuffer = [];
 let charts = {};
 let eventSource = null;
+// Track last cumulative values for rate charts (SSE live updates)
+let lastCumulative = {}; // "chartId:seriesLabel" -> lastValue
 
-// Chart definitions: id -> { metrics, yMax, format, multiMetric }
+// Chart definitions
 const CHART_DEFS = {
     "chart-cpu":  { metrics: ["system.cpu.utilization"], yMax: 100, format: "pct" },
     "chart-load": { metrics: ["system.cpu.load_average.1m", "system.cpu.load_average.5m", "system.cpu.load_average.15m"], yMax: null, format: "num", multiMetric: true },
     "chart-mem":  { metrics: ["system.memory.utilization"], yMax: 100, format: "pct" },
     "chart-disk": { metrics: ["system.disk.utilization"], yMax: 100, format: "pct" },
-    "chart-net":  { metrics: ["system.network.io.receive", "system.network.io.transmit"], yMax: null, format: "bytes", multiMetric: true },
+    "chart-net":  { metrics: ["system.network.io.receive", "system.network.io.transmit"], yMax: null, format: "byterate", multiMetric: true, rate: true },
     "chart-proc": { metrics: ["system.process.count"], yMax: null, format: "num" },
 };
 
+// --- Formatters ---
+
+function formatBytesRate(v) {
+    if (v == null) return "";
+    const abs = Math.abs(v);
+    if (abs >= 1e9) return (v / 1e9).toFixed(1) + " GB/s";
+    if (abs >= 1e6) return (v / 1e6).toFixed(1) + " MB/s";
+    if (abs >= 1e3) return (v / 1e3).toFixed(1) + " KB/s";
+    return v.toFixed(0) + " B/s";
+}
+
 function formatBytes(v) {
     if (v == null) return "";
-    if (v >= 1e9) return (v / 1e9).toFixed(1) + " GB";
-    if (v >= 1e6) return (v / 1e6).toFixed(1) + " MB";
-    if (v >= 1e3) return (v / 1e3).toFixed(1) + " KB";
+    const abs = Math.abs(v);
+    if (abs >= 1e9) return (v / 1e9).toFixed(1) + " GB";
+    if (abs >= 1e6) return (v / 1e6).toFixed(1) + " MB";
+    if (abs >= 1e3) return (v / 1e3).toFixed(1) + " KB";
     return v.toFixed(0) + " B";
 }
 
@@ -115,9 +129,32 @@ function formatNum(v) { return v == null ? "" : v.toFixed(1); }
 
 function getFormatter(fmt) {
     if (fmt === "pct") return formatPct;
+    if (fmt === "byterate") return formatBytesRate;
     if (fmt === "bytes") return formatBytes;
     return formatNum;
 }
+
+// --- Rate conversion (cumulative counters -> per-second rate) ---
+
+function computeRates(timestamps, values) {
+    if (!timestamps || timestamps.length < 2) return values.map(() => null);
+    const rates = [null];
+    for (let i = 1; i < timestamps.length; i++) {
+        const dt = timestamps[i] - timestamps[i - 1];
+        const prev = values[i - 1];
+        const cur = values[i];
+        if (dt <= 0 || cur == null || prev == null) {
+            rates.push(null);
+        } else {
+            const delta = cur - prev;
+            // Negative delta = counter reset, skip
+            rates.push(delta >= 0 ? delta / dt : null);
+        }
+    }
+    return rates;
+}
+
+// --- Chart creation ---
 
 function createChart(elId, seriesLabels, data, opts) {
     const el = document.getElementById(elId);
@@ -132,8 +169,9 @@ function createChart(elId, seriesLabels, data, opts) {
         series.push({
             label: label,
             stroke: HOST_COLORS[i % HOST_COLORS.length],
-            width: 2,
-            fill: opts.format === "bytes" ? HOST_COLORS[i % HOST_COLORS.length] + "20" : undefined,
+            width: 1.5,
+            spanGaps: true,
+            fill: HOST_COLORS[i % HOST_COLORS.length] + "18",
         });
     });
 
@@ -159,6 +197,8 @@ function createChart(elId, seriesLabels, data, opts) {
     return chart;
 }
 
+// --- Data fetching ---
+
 async function fetchTimeseries(metric, host, range) {
     const url = `/api/metrics/${SLUG}/timeseries?metric=${encodeURIComponent(metric)}&host=${host}&range=${range}`;
     const resp = await fetch(url);
@@ -166,9 +206,21 @@ async function fetchTimeseries(metric, host, range) {
     return await resp.json();
 }
 
+// Build a merged timestamp array from multiple API responses
+function mergeTimestamps(allData) {
+    const tsSet = new Set();
+    for (const d of allData) {
+        if (d && d.timestamps) {
+            for (const ts of d.timestamps) tsSet.add(ts);
+        }
+    }
+    const merged = Array.from(tsSet);
+    merged.sort((a, b) => a - b);
+    return merged;
+}
+
 async function loadChart(chartId, def) {
     if (def.multiMetric) {
-        // Multiple metrics on one chart (e.g., load avg 1m/5m/15m or net rx/tx)
         const allData = await Promise.all(def.metrics.map(m => fetchTimeseries(m, currentHost, currentRange)));
         const validData = allData.filter(d => d && d.timestamps.length > 0);
         if (validData.length === 0) {
@@ -177,8 +229,8 @@ async function loadChart(chartId, def) {
             return;
         }
 
-        // Use longest timestamp array as base
-        let timestamps = validData[0].timestamps;
+        // Merge all timestamps from all API responses
+        const timestamps = mergeTimestamps(allData);
         const labels = [];
         const seriesData = [timestamps];
 
@@ -186,24 +238,31 @@ async function loadChart(chartId, def) {
             const d = allData[i];
             if (!d || d.timestamps.length === 0) continue;
 
-            // For multi-metric, if host=all, we might have multiple hosts per metric
-            // Show each host+metric combination as separate series
-            if (d.series.length > 1) {
-                for (const s of d.series) {
-                    const shortMetric = def.metrics[i].split(".").pop();
-                    labels.push(`${s.host} ${shortMetric}`);
-                    // Align values to base timestamps
-                    const tsMap = {};
-                    d.timestamps.forEach((ts, idx) => { tsMap[ts] = s.values[idx]; });
-                    seriesData.push(timestamps.map(ts => tsMap[ts] ?? null));
-                }
-            } else if (d.series.length === 1) {
-                const shortMetric = def.metrics[i].split(".").pop();
-                const hostLabel = d.series[0].host;
-                labels.push(`${hostLabel} ${shortMetric}`);
+            const shortMetric = def.metrics[i].split(".").pop();
+
+            for (const s of d.series) {
+                const hostLabel = s.host;
+                labels.push(d.series.length > 1 ? `${hostLabel} ${shortMetric}` : shortMetric);
+
+                // Build lookup from this series' timestamps to values
                 const tsMap = {};
-                d.timestamps.forEach((ts, idx) => { tsMap[ts] = d.series[0].values[idx]; });
-                seriesData.push(timestamps.map(ts => tsMap[ts] ?? null));
+                d.timestamps.forEach((ts, idx) => {
+                    const v = s.values[idx];
+                    if (v != null) tsMap[ts] = v;
+                });
+                let values = timestamps.map(ts => tsMap[ts] ?? null);
+
+                // Convert cumulative counters to rates
+                if (def.rate) {
+                    // Store last cumulative value for SSE updates
+                    const lastNonNull = values.filter(v => v != null);
+                    if (lastNonNull.length > 0) {
+                        lastCumulative[`${chartId}:${hostLabel} ${shortMetric}`] = lastNonNull[lastNonNull.length - 1];
+                    }
+                    values = computeRates(timestamps, values);
+                }
+
+                seriesData.push(values);
             }
         }
 
@@ -224,7 +283,11 @@ async function loadChart(chartId, def) {
         }
 
         const labels = data.series.map(s => s.host);
-        const seriesData = [data.timestamps, ...data.series.map(s => s.values)];
+        const seriesValues = data.series.map(s => {
+            // Replace undefined/null holes with explicit null
+            return s.values.map(v => v ?? null);
+        });
+        const seriesData = [data.timestamps, ...seriesValues];
         charts[chartId] = createChart(chartId, labels, seriesData, def);
     }
 }
@@ -233,6 +296,8 @@ async function loadAllCharts() {
     const promises = Object.entries(CHART_DEFS).map(([id, def]) => loadChart(id, def));
     await Promise.all(promises);
 }
+
+// --- Controls ---
 
 function setRange(range) {
     currentRange = range;
@@ -257,7 +322,6 @@ function toggleLive() {
         btn.className = "btn btn-xs btn-success gap-1";
         indicator.className = "w-2 h-2 rounded-full bg-success-content animate-pulse";
         label.textContent = "Live";
-        // Flush buffer
         flushBuffer();
     } else {
         btn.className = "btn btn-xs btn-ghost gap-1";
@@ -273,6 +337,8 @@ function flushBuffer() {
     sseBuffer = [];
 }
 
+// --- SSE live updates ---
+
 function applyMetricEvent(eventData) {
     const ts = eventData.timestamp;
     const metricsMap = eventData.metrics;
@@ -281,7 +347,6 @@ function applyMetricEvent(eventData) {
         const chart = charts[chartId];
         if (!chart) continue;
 
-        // Check if any of this chart's metrics are in the event
         let hasData = false;
         for (const metricName of def.metrics) {
             if (metricsMap[metricName]) {
@@ -291,23 +356,34 @@ function applyMetricEvent(eventData) {
         }
         if (!hasData) continue;
 
-        // Append new point to chart data
         const data = chart.data;
         const newTs = [...data[0], ts];
 
         if (def.multiMetric) {
-            // For multi-metric charts, we need to match series by label
             const newData = [newTs];
             for (let i = 1; i < data.length; i++) {
                 const seriesLabel = chart.series[i].label || "";
                 let newVal = null;
-                // Try to find matching metric+host
+
                 for (const metricName of def.metrics) {
                     const shortMetric = metricName.split(".").pop();
                     if (seriesLabel.includes(shortMetric) && metricsMap[metricName]) {
                         for (const [host, val] of Object.entries(metricsMap[metricName])) {
-                            if (seriesLabel.includes(host)) {
-                                newVal = val;
+                            if (seriesLabel.includes(host) || (data.length <= 2 + def.metrics.length)) {
+                                if (def.rate) {
+                                    // Convert cumulative to rate using last known value
+                                    const key = `${chartId}:${seriesLabel}`;
+                                    const prev = lastCumulative[key];
+                                    const prevTs = data[0][data[0].length - 1];
+                                    if (prev != null && prevTs && ts > prevTs) {
+                                        const delta = val - prev;
+                                        const dt = ts - prevTs;
+                                        newVal = delta >= 0 ? delta / dt : null;
+                                    }
+                                    lastCumulative[key] = val;
+                                } else {
+                                    newVal = val;
+                                }
                                 break;
                             }
                         }

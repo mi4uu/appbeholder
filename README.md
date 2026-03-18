@@ -31,15 +31,41 @@ App Beholder is different: **one binary, one database, zero complexity.** Deploy
 
 ## Features
 
-**Live Log Stream** — Real-time scrolling log view with level, host, and text filtering. Logs stream in via Server-Sent Events as they arrive. Click any log entry to see full attributes and stack traces. Jump from a log directly to its trace.
+### Live Log Stream
 
-**Trace Explorer** — Waterfall visualization of distributed traces. See the full span tree with timing, parent-child relationships, and error highlighting. Drill into any span to see attributes and linked logs.
+Real-time scrolling log view with level, host, and text filtering. Logs stream in via Server-Sent Events as they arrive. Click any log entry to see full attributes and stack traces. Jump from a log directly to its trace.
 
-**Error Tracking** — Errors automatically grouped by fingerprint. See occurrence counts, first/last seen, affected hosts, and trend sparklines. Click into any error group to see individual stack traces and correlated traces.
+<p align="center">
+  <img src="static/screenshots/logs.png" alt="Live Logs" width="800" />
+</p>
 
-**Metrics Dashboard** — CPU, memory, swap, disk, network, and per-process metrics charted over time. Correlate resource spikes with errors and slow traces using overlay markers.
+### Trace Explorer
 
-**Multi-Project & Multi-Host** — Track multiple applications across multiple servers. Projects are auto-created on first event — no setup required.
+Waterfall visualization of distributed traces. See the full span tree with timing, parent-child relationships, and error highlighting. Drill into any span to see attributes and linked logs.
+
+<p align="center">
+  <img src="static/screenshots/traces.png" alt="Trace List" width="800" />
+</p>
+
+<p align="center">
+  <img src="static/screenshots/trace-detail.png" alt="Trace Detail" width="800" />
+</p>
+
+### Metrics Dashboard
+
+CPU, memory, swap, disk, network, and per-process metrics charted over time with multi-host support.
+
+<p align="center">
+  <img src="static/screenshots/metrics.png" alt="Metrics Dashboard" width="800" />
+</p>
+
+### Multi-Project & Multi-Host
+
+Track multiple applications across multiple servers. Projects are auto-created on first event — no setup required. Per-host stats with log and span counts.
+
+<p align="center">
+  <img src="static/screenshots/hosts.png" alt="Hosts" width="800" />
+</p>
 
 ## Tech Stack
 
