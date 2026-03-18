@@ -60,8 +60,8 @@
                             </a>
                             <form method="POST" action="/projects/{{ p.id }}/delete"
                                   onsubmit="return confirm('Delete project {{ p.name }}? This cannot be undone.')">
-                                <button type="submit" class="btn btn-ghost btn-xs text-error">
-                                    <i class="lni lni-trash-can"></i>
+                                <button type="submit" class="btn btn-outline btn-error btn-xs">
+                                    Delete
                                 </button>
                             </form>
                         </div>
