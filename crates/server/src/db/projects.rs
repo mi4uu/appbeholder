@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use deadpool_postgres::Pool;
 use uuid::Uuid;
 
@@ -49,6 +50,35 @@ pub async fn list_projects(pool: &Pool) -> Result<Vec<(Uuid, String, String)>, B
     ).await?;
 
     Ok(rows.iter().map(|r| (r.get(0), r.get(1), r.get(2))).collect())
+}
+
+pub async fn list_projects_full(pool: &Pool) -> Result<Vec<(Uuid, String, String, DateTime<Utc>)>, Box<dyn std::error::Error>> {
+    let client = pool.get().await?;
+    let rows = client.query(
+        "SELECT id, name, slug, created_at FROM projects ORDER BY name",
+        &[],
+    ).await?;
+
+    Ok(rows.iter().map(|r| (r.get(0), r.get(1), r.get(2), r.get(3))).collect())
+}
+
+pub async fn create_project(pool: &Pool, name: &str, slug: &str) -> Result<Uuid, Box<dyn std::error::Error>> {
+    let client = pool.get().await?;
+    let row = client.query_one(
+        "INSERT INTO projects (name, slug) VALUES ($1, $2)
+         ON CONFLICT (slug) DO NOTHING
+         RETURNING id",
+        &[&name, &slug],
+    ).await?;
+    Ok(row.get(0))
+}
+
+pub async fn delete_project(pool: &Pool, id: Uuid) -> Result<(), Box<dyn std::error::Error>> {
+    let client = pool.get().await?;
+    // Delete related data first
+    client.execute("DELETE FROM hosts WHERE project_id = $1", &[&id]).await?;
+    client.execute("DELETE FROM projects WHERE id = $1", &[&id]).await?;
+    Ok(())
 }
 
 pub async fn list_hosts(pool: &Pool, project_id: Uuid) -> Result<Vec<(Uuid, String)>, Box<dyn std::error::Error>> {

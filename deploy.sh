@@ -98,10 +98,17 @@ SETUP_EOF
 # ============================================================
 # Step 3: Deploy binary and config
 # ============================================================
+info "Stopping service before deploy..."
+$SSH_CMD "sudo systemctl stop appbeholder 2>/dev/null || true"
+
 info "Deploying binary to ${EC2_HOST}..."
 
 $SCP_CMD "$BINARY" "${EC2_USER}@${EC2_HOST}:${REMOTE_DIR}/appbeholder"
 $SSH_CMD "chmod +x ${REMOTE_DIR}/appbeholder && sudo setcap 'cap_net_bind_service=+ep' ${REMOTE_DIR}/appbeholder"
+
+info "Deploying static files..."
+$SSH_CMD "mkdir -p ${REMOTE_DIR}/static"
+$SCP_CMD -r "$PROJECT_DIR/static/" "${EC2_USER}@${EC2_HOST}:${REMOTE_DIR}/static/"
 
 info "Deploying configuration..."
 
@@ -110,7 +117,7 @@ $SSH_CMD << CONF_EOF
 cat > ${REMOTE_DIR}/config.toml << 'TOML'
 [server]
 host = "0.0.0.0"
-port = 80
+port = 8080
 
 [database]
 url = "postgres:///appbeholder?host=/var/run/postgresql&user=ubuntu"

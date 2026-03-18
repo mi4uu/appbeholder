@@ -5,27 +5,33 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Login - App Beholder</title>
     <link href="https://cdn.jsdelivr.net/npm/daisyui@4.12.14/dist/full.min.css" rel="stylesheet" type="text/css" />
+    <link href="https://cdn.lineicons.com/5.0/lineicons.css" rel="stylesheet" />
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="min-h-screen bg-base-100 flex items-center justify-center">
     <div class="card w-96 bg-base-200 shadow-xl">
-        <div class="card-body">
-            <h2 class="card-title justify-center">App Beholder</h2>
+        <div class="card-body items-center">
+            <img src="/static/logo.png" alt="App Beholder" class="w-16 mb-2" />
+            <h2 class="card-title">App Beholder</h2>
             <p class="text-center text-sm opacity-60">Enter password to continue</p>
 
             {% if has_error %}
             <div class="alert alert-error text-sm mt-2">
+                <i class="lni lni-warning"></i>
                 <span>{{ error_message }}</span>
             </div>
             {% endif %}
 
-            <form method="POST" action="/login" class="mt-4">
+            <form method="POST" action="/login" class="w-full mt-4">
                 <div class="form-control">
                     <input type="password" name="password" placeholder="Password"
                            class="input input-bordered w-full" autofocus required />
                 </div>
                 <div class="form-control mt-4">
-                    <button type="submit" class="btn btn-primary w-full">Login</button>
+                    <button type="submit" class="btn btn-primary w-full">
+                        <i class="lni lni-lock-alt"></i>
+                        Login
+                    </button>
                 </div>
             </form>
         </div>

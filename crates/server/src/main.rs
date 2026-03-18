@@ -102,13 +102,20 @@ fn create_router(state: AppState) -> axum::Router {
     let web_routes = axum::Router::new()
         .route("/", get(web::index))
         .route("/login", get(web::login_page).post(web::login_submit))
+        .route("/projects", get(web::projects_page).post(web::create_project))
+        .route("/projects/{id}/delete", post(web::delete_project))
         .route("/projects/{slug}/logs", get(web::logs_page))
+        .route("/projects/{slug}/traces", get(web::traces_page))
+        .route("/projects/{slug}/errors", get(web::errors_page))
+        .route("/projects/{slug}/metrics", get(web::metrics_page))
+        .route("/projects/{slug}/hosts", get(web::hosts_page))
         .route("/api/logs/{slug}", get(web::logs_data));
 
     axum::Router::new()
         .nest("/api", api_routes)
         .nest("/sse", sse_routes)
         .merge(web_routes)
+        .nest_service("/static", tower_http::services::ServeDir::new("static"))
         .layer(middleware::from_fn_with_state(state.clone(), auth::auth_middleware))
         .with_state(state)
 }

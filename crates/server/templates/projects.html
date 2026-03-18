@@ -1,0 +1,75 @@
+<!-- Projects Header -->
+<div class="p-4 border-b border-base-300 flex items-center justify-between">
+    <h2 class="text-lg font-bold">
+        <i class="lni lni-cog"></i>
+        Manage Projects
+    </h2>
+</div>
+
+<div class="p-6">
+    <!-- Create Project -->
+    <div class="card bg-base-200 mb-6">
+        <div class="card-body">
+            <h3 class="card-title text-sm">
+                <i class="lni lni-plus"></i>
+                Create New Project
+            </h3>
+            <form method="POST" action="/projects" class="flex items-end gap-3 mt-2">
+                <div class="form-control flex-1">
+                    <label class="label"><span class="label-text text-xs">Name</span></label>
+                    <input type="text" name="name" placeholder="My Application" class="input input-bordered input-sm" required />
+                </div>
+                <div class="form-control flex-1">
+                    <label class="label"><span class="label-text text-xs">Slug</span></label>
+                    <input type="text" name="slug" placeholder="my-application" class="input input-bordered input-sm" required
+                           pattern="[a-z0-9\-]+" title="Lowercase letters, numbers, and hyphens only" />
+                </div>
+                <button type="submit" class="btn btn-primary btn-sm">Create</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Project List -->
+    {% if projects.is_empty() %}
+    <div class="text-center py-12 opacity-60">
+        <i class="lni lni-folder" style="font-size: 3rem;"></i>
+        <p class="mt-4">No projects yet. Create one above or send data to auto-create.</p>
+    </div>
+    {% else %}
+    <div class="overflow-x-auto">
+        <table class="table table-sm">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Slug</th>
+                    <th>Created</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for p in projects %}
+                <tr class="hover">
+                    <td class="font-medium">{{ p.name }}</td>
+                    <td><code class="text-xs bg-base-300 px-2 py-1 rounded">{{ p.slug }}</code></td>
+                    <td class="text-sm opacity-70">{{ p.created_at }}</td>
+                    <td>
+                        <div class="flex gap-1">
+                            <a href="/projects/{{ p.slug }}/logs" class="btn btn-ghost btn-xs">
+                                <i class="lni lni-list"></i>
+                                Logs
+                            </a>
+                            <form method="POST" action="/projects/{{ p.id }}/delete"
+                                  onsubmit="return confirm('Delete project {{ p.name }}? This cannot be undone.')">
+                                <button type="submit" class="btn btn-ghost btn-xs text-error">
+                                    <i class="lni lni-trash-can"></i>
+                                </button>
+                            </form>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+</div>
