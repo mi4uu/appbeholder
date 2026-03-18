@@ -96,6 +96,11 @@ fn create_router(state: AppState) -> axum::Router {
         .route("/v1/logs", post(api::logs::ingest_log))
         .route("/v1/errors", post(api::errors::ingest_error));
 
+    let otlp_routes = axum::Router::new()
+        .route("/v1/traces", post(api::otlp_traces::ingest_traces))
+        .route("/v1/logs", post(api::otlp_logs::ingest_logs))
+        .route("/v1/metrics", post(api::otlp_metrics::ingest_metrics));
+
     let sse_routes = axum::Router::new()
         .route("/logs/{slug}", get(web::sse_logs));
 
@@ -115,6 +120,7 @@ fn create_router(state: AppState) -> axum::Router {
         .nest("/api", api_routes)
         .nest("/sse", sse_routes)
         .merge(web_routes)
+        .merge(otlp_routes)
         .nest_service("/static", tower_http::services::ServeDir::new("static"))
         .layer(middleware::from_fn_with_state(state.clone(), auth::auth_middleware))
         .with_state(state)
