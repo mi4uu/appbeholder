@@ -1,0 +1,101 @@
+<!-- Logs Header -->
+<div class="p-4 border-b border-base-300 flex items-center justify-between">
+    <h2 class="text-lg font-bold">Live Logs - {{ project_name }}</h2>
+    <div class="flex items-center gap-2">
+        <button id="pause-btn" class="btn btn-sm btn-ghost" onclick="togglePause()">
+            <span id="pause-icon">Pause</span>
+        </button>
+    </div>
+</div>
+
+<!-- Filters -->
+<div class="p-2 border-b border-base-300 flex items-center gap-2 flex-wrap">
+    <select id="level-filter" class="select select-bordered select-xs"
+            hx-get="/api/logs/{{ project_slug }}"
+            hx-target="#log-entries"
+            hx-include="[id='level-filter'], [id='host-filter'], [id='search-filter']"
+            name="level">
+        <option value="">All Levels</option>
+        <option value="debug">Debug</option>
+        <option value="info">Info</option>
+        <option value="warn">Warn</option>
+        <option value="error">Error</option>
+        <option value="fatal">Fatal</option>
+    </select>
+
+    <select id="host-filter" class="select select-bordered select-xs"
+            hx-get="/api/logs/{{ project_slug }}"
+            hx-target="#log-entries"
+            hx-include="[id='level-filter'], [id='host-filter'], [id='search-filter']"
+            name="host_id">
+        <option value="">All Hosts</option>
+        {% for h in hosts %}
+        <option value="{{ h.id }}">{{ h.hostname }}</option>
+        {% endfor %}
+    </select>
+
+    <input id="search-filter" type="text" placeholder="Search logs..."
+           class="input input-bordered input-xs w-64"
+           name="search"
+           hx-get="/api/logs/{{ project_slug }}"
+           hx-target="#log-entries"
+           hx-include="[id='level-filter'], [id='host-filter'], [id='search-filter']"
+           hx-trigger="keyup changed delay:300ms" />
+</div>
+
+<!-- Log Stream -->
+<div class="flex-1 overflow-y-auto" id="log-container"
+     hx-ext="sse"
+     sse-connect="/sse/logs/{{ project_slug }}"
+     sse-close="close">
+
+    <div id="log-entries">
+        {{ logs_html|safe }}
+    </div>
+
+    <div sse-swap="log" hx-target="#log-entries" hx-swap="beforeend scroll:#log-container:bottom"></div>
+</div>
+
+<script>
+let paused = false;
+
+function togglePause() {
+    paused = !paused;
+    const btn = document.getElementById('pause-icon');
+    const container = document.getElementById('log-container');
+
+    if (paused) {
+        btn.textContent = 'Resume';
+        const ext = container.getAttribute('sse-connect');
+        container.removeAttribute('sse-connect');
+        container.dataset.sseUrl = ext;
+    } else {
+        btn.textContent = 'Pause';
+        const ext = container.dataset.sseUrl;
+        if (ext) {
+            container.setAttribute('sse-connect', ext);
+            htmx.process(container);
+        }
+        scrollToBottom();
+    }
+}
+
+function scrollToBottom() {
+    const container = document.getElementById('log-container');
+    container.scrollTop = container.scrollHeight;
+}
+
+const observer = new MutationObserver(() => {
+    if (!paused) {
+        scrollToBottom();
+    }
+});
+
+document.addEventListener('DOMContentLoaded', () => {
+    const entries = document.getElementById('log-entries');
+    if (entries) {
+        observer.observe(entries, { childList: true });
+        scrollToBottom();
+    }
+});
+</script>

@@ -1,0 +1,31 @@
+[package]
+name = "appbeholder"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "appbeholder"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.8", features = ["macros"] }
+axum-extra = { version = "0.10", features = ["cookie-signed"] }
+tokio = { version = "1", features = ["full"] }
+deadpool-postgres = "0.14"
+tokio-postgres = { version = "0.7", features = ["with-uuid-0_8", "with-serde_json-1", "with-chrono-0_4"] }
+postgres-types = { version = "0.2", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+askama = "0.12"
+askama_axum = "0.4"
+uuid = { version = "0.8", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["fs", "cors"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+sha2 = "0.10"
+hex = "0.4"
+async-stream = "0.3"
+futures = "0.3"
