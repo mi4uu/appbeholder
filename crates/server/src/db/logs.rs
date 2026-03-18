@@ -100,3 +100,27 @@ pub async fn query_logs(pool: &Pool, query: &LogQuery) -> Result<Vec<LogEntry>, 
         stack_trace: r.get(11),
     }).collect())
 }
+
+pub async fn query_logs_by_trace(pool: &Pool, trace_id: &str) -> Result<Vec<LogEntry>, Box<dyn std::error::Error>> {
+    let client = pool.get().await?;
+    let rows = client.query(
+        "SELECT id, project_id, host_id, timestamp, level, message, source, trace_id, span_id, fingerprint, attributes, stack_trace
+         FROM log_entries WHERE trace_id = $1 ORDER BY timestamp ASC",
+        &[&trace_id],
+    ).await?;
+
+    Ok(rows.iter().map(|r| LogEntry {
+        id: r.get(0),
+        project_id: r.get(1),
+        host_id: r.get(2),
+        timestamp: r.get(3),
+        level: r.get(4),
+        message: r.get(5),
+        source: r.get(6),
+        trace_id: r.get(7),
+        span_id: r.get(8),
+        fingerprint: r.get(9),
+        attributes: r.get(10),
+        stack_trace: r.get(11),
+    }).collect())
+}

@@ -1,0 +1,163 @@
+<!-- Trace Header -->
+<div class="p-4 border-b border-base-300">
+    <div class="flex items-center gap-2 mb-2">
+        <a href="/projects/{{ project_slug }}/traces" class="btn btn-ghost btn-xs">
+            &larr; Traces
+        </a>
+        <h2 class="text-lg font-bold">Trace Detail</h2>
+    </div>
+
+    <!-- Trace Summary -->
+    <div class="flex flex-wrap gap-4 items-center text-sm">
+        <div>
+            <span class="opacity-60">Trace ID:</span>
+            <code class="bg-base-300 px-2 py-0.5 rounded text-xs">{{ trace_id_short }}</code>
+        </div>
+        <div>
+            <span class="opacity-60">Root:</span>
+            <span class="font-medium">{{ root_name }}</span>
+        </div>
+        <div>
+            <span class="opacity-60">Duration:</span>
+            <span class="font-mono font-bold">{{ total_duration }}</span>
+        </div>
+        <div>
+            <span class="opacity-60">Spans:</span>
+            <span class="font-mono">{{ span_count }}</span>
+        </div>
+        <div>
+            <span class="opacity-60">Host:</span>
+            <span>{{ hostname }}</span>
+        </div>
+        <div>
+            <span class="badge {{ status_badge }} badge-sm">{{ status }}</span>
+        </div>
+        <div class="opacity-60 text-xs">{{ timestamp }}</div>
+    </div>
+</div>
+
+<!-- Waterfall -->
+<div class="flex-1 overflow-y-auto">
+    <div class="p-4">
+        <h3 class="text-sm font-bold mb-2 opacity-70">Span Waterfall</h3>
+
+        <div class="overflow-x-auto">
+            <table class="table table-xs w-full">
+                <thead>
+                    <tr>
+                        <th class="w-1/3">Span Name</th>
+                        <th class="w-24 text-right">Duration</th>
+                        <th>Timeline</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for span in spans %}
+                    <tr class="hover cursor-pointer {% if span.has_error %}bg-error/10{% endif %}"
+                        onclick="toggleSpanDetail('{{ span.id }}')">
+                        <td>
+                            <div style="padding-left: {{ span.indent_px }}px;" class="flex items-center gap-1">
+                                {% if span.depth > 0 %}
+                                <span class="opacity-30">|_</span>
+                                {% endif %}
+                                <span class="text-xs px-1.5 py-0.5 rounded font-mono {{ span.kind_class }}">
+                                    {{ span.kind }}
+                                </span>
+                                <span class="text-sm truncate max-w-xs" title="{{ span.name }}">{{ span.name }}</span>
+                                {% if span.has_error %}
+                                <span class="badge badge-error badge-xs">ERR</span>
+                                {% endif %}
+                            </div>
+                        </td>
+                        <td class="text-right font-mono text-xs">{{ span.duration_display }}</td>
+                        <td>
+                            <div class="relative h-5 bg-base-300/50 rounded overflow-hidden">
+                                <div class="absolute top-0.5 bottom-0.5 rounded {{ span.bar_class }}"
+                                     style="left: {{ span.offset_pct }}%; width: {{ span.width_pct }}%; min-width: 2px;">
+                                </div>
+                            </div>
+                        </td>
+                    </tr>
+                    <!-- Span Detail (hidden by default) -->
+                    <tr id="detail-{{ span.id }}" class="hidden">
+                        <td colspan="3" class="bg-base-200 p-0">
+                            <div class="p-4 text-sm">
+                                <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+                                    <div>
+                                        <span class="opacity-60 text-xs">Span ID</span>
+                                        <div class="font-mono text-xs">{{ span.id }}</div>
+                                    </div>
+                                    <div>
+                                        <span class="opacity-60 text-xs">Kind</span>
+                                        <div>{{ span.kind }}</div>
+                                    </div>
+                                    <div>
+                                        <span class="opacity-60 text-xs">Status</span>
+                                        <div>{{ span.status }} {{ span.status_message }}</div>
+                                    </div>
+                                    <div>
+                                        <span class="opacity-60 text-xs">Start Time</span>
+                                        <div class="font-mono text-xs">{{ span.timestamp }}</div>
+                                    </div>
+                                </div>
+
+                                <div>
+                                    <span class="opacity-60 text-xs">Attributes</span>
+                                    <pre class="bg-base-300 p-2 rounded mt-1 text-xs overflow-x-auto max-h-64">{{ span.attributes_json }}</pre>
+                                </div>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Related Logs -->
+    {% if log_count > 0 %}
+    <div class="p-4 border-t border-base-300">
+        <h3 class="text-sm font-bold mb-2 opacity-70">
+            Related Logs
+            <span class="badge badge-ghost badge-xs ml-1">{{ log_count }}</span>
+        </h3>
+
+        <div class="overflow-x-auto">
+            <table class="table table-xs">
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Level</th>
+                        <th>Message</th>
+                        <th>Span ID</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for log in logs %}
+                    <tr class="hover">
+                        <td class="font-mono text-xs whitespace-nowrap">{{ log.timestamp }}</td>
+                        <td><span class="badge {{ log.level_badge }} badge-xs">{{ log.level }}</span></td>
+                        <td class="text-sm max-w-lg truncate">{{ log.message }}</td>
+                        <td class="font-mono text-xs opacity-60">{{ log.span_id }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endif %}
+
+    {% if spans.is_empty() %}
+    <div class="text-center py-12 opacity-60">
+        <p class="mt-4">No spans found for this trace.</p>
+    </div>
+    {% endif %}
+</div>
+
+<script>
+function toggleSpanDetail(spanId) {
+    const detail = document.getElementById('detail-' + spanId);
+    if (detail) {
+        detail.classList.toggle('hidden');
+    }
+}
+</script>

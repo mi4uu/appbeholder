@@ -114,6 +114,7 @@ fn create_router(state: AppState) -> axum::Router {
         .route("/projects/{slug}/errors", get(web::errors_page))
         .route("/projects/{slug}/metrics", get(web::metrics_page))
         .route("/projects/{slug}/hosts", get(web::hosts_page))
+        .route("/projects/{slug}/traces/{trace_id}", get(web::trace_detail_page))
         .route("/api/logs/{slug}", get(web::logs_data))
         .route("/api/traces/{slug}", get(web::traces_data))
         .route("/api/errors/{slug}", get(web::errors_data));

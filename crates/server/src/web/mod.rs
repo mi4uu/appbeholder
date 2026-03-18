@@ -89,6 +89,52 @@ struct HostsTemplate {
     hosts: Vec<HostDetailView>,
 }
 
+pub struct WaterfallSpan {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub kind_class: String,
+    pub bar_class: String,
+    pub status: String,
+    pub status_message: String,
+    pub duration_ms: f64,
+    pub duration_display: String,
+    pub depth: usize,
+    pub indent_px: usize,
+    pub offset_pct: f64,
+    pub width_pct: f64,
+    pub has_error: bool,
+    pub attributes_json: String,
+    pub timestamp: String,
+}
+
+pub struct TraceLogView {
+    pub timestamp: String,
+    pub level: String,
+    pub level_badge: String,
+    pub message: String,
+    pub span_id: String,
+}
+
+#[derive(Template)]
+#[template(path = "trace_detail.html")]
+struct TraceDetailTemplate {
+    project_slug: String,
+    project_name: String,
+    trace_id: String,
+    trace_id_short: String,
+    root_name: String,
+    total_duration: String,
+    span_count: usize,
+    hostname: String,
+    status: String,
+    status_badge: String,
+    timestamp: String,
+    spans: Vec<WaterfallSpan>,
+    logs: Vec<TraceLogView>,
+    log_count: usize,
+}
+
 pub struct MetricView {
     pub metric_name: String,
     pub value: String,
@@ -331,15 +377,9 @@ pub async fn logs_page(
 
 // --- Traces page ---
 
-fn render_trace_row(trace: &db::spans::TraceRow, hostname: &str) -> String {
+fn render_trace_row(trace: &db::spans::TraceRow, hostname: &str, slug: &str) -> String {
     let ts = trace.timestamp.format("%Y-%m-%d %H:%M:%S");
-    let duration = if trace.duration_ms < 1.0 {
-        format!("{:.0}us", trace.duration_ms * 1000.0)
-    } else if trace.duration_ms < 1000.0 {
-        format!("{:.1}ms", trace.duration_ms)
-    } else {
-        format!("{:.2}s", trace.duration_ms / 1000.0)
-    };
+    let duration = format_duration(trace.duration_ms);
     let status_badge = match trace.status.as_str() {
         "error" => "badge-error",
         "ok" => "badge-success",
@@ -352,7 +392,7 @@ fn render_trace_row(trace: &db::spans::TraceRow, hostname: &str) -> String {
     let short_tid = &trace.trace_id[..trace.trace_id.len().min(16)];
 
     format!(
-        r#"<tr class="hover">
+        r#"<tr class="hover cursor-pointer" onclick="window.location.href='/projects/{}/traces/{}'">
             <td class="font-mono text-xs">{}</td>
             <td class="text-sm">{}</td>
             <td class="text-sm text-center">{}</td>
@@ -361,6 +401,7 @@ fn render_trace_row(trace: &db::spans::TraceRow, hostname: &str) -> String {
             <td class="text-xs opacity-70">{}</td>
             <td class="text-xs opacity-70">{}</td>
         </tr>"#,
+        slug, trace.trace_id,
         short_tid, escaped_name, trace.span_count, duration,
         status_badge, trace.status.to_uppercase(), hostname, ts
     )
@@ -402,7 +443,7 @@ pub async fn traces_page(
             let host_map: std::collections::HashMap<Uuid, String> = hosts_raw.iter().cloned().collect();
             let rows: String = traces.iter().map(|t| {
                 let hostname = host_map.get(&t.host_id).map(|s| s.as_str()).unwrap_or("unknown");
-                render_trace_row(t, hostname)
+                render_trace_row(t, hostname, &slug)
             }).collect::<Vec<_>>().join("\n");
             format!(
                 r#"<div class="overflow-x-auto">
@@ -565,6 +606,205 @@ pub async fn hosts_page(
     Html(render_page(&format!("Hosts - {}", project_name), &pool_projects, &slug, "hosts", content))
 }
 
+// --- Trace detail page ---
+
+fn format_duration(ms: f64) -> String {
+    if ms < 0.001 {
+        format!("{:.0}ns", ms * 1_000_000.0)
+    } else if ms < 1.0 {
+        format!("{:.0}us", ms * 1000.0)
+    } else if ms < 1000.0 {
+        format!("{:.1}ms", ms)
+    } else {
+        format!("{:.2}s", ms / 1000.0)
+    }
+}
+
+fn build_waterfall(spans: &[db::spans::SpanEntry]) -> Vec<WaterfallSpan> {
+    if spans.is_empty() {
+        return vec![];
+    }
+
+    // Find trace time bounds
+    let trace_start = spans.iter().map(|s| s.timestamp).min().unwrap();
+    let trace_end = spans.iter().map(|s| {
+        s.timestamp + chrono::Duration::microseconds((s.duration_ms * 1000.0) as i64)
+    }).max().unwrap();
+    let total_duration_ms = (trace_end - trace_start).num_microseconds().unwrap_or(1) as f64 / 1000.0;
+    let total_duration_ms = if total_duration_ms < 0.001 { 0.001 } else { total_duration_ms };
+
+    // Build parent→children index
+    let mut id_to_idx: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for (i, span) in spans.iter().enumerate() {
+        id_to_idx.insert(&span.id, i);
+    }
+
+    let mut children: Vec<Vec<usize>> = vec![vec![]; spans.len()];
+    let mut roots: Vec<usize> = vec![];
+
+    for (i, span) in spans.iter().enumerate() {
+        if let Some(ref parent_id) = span.parent_span_id {
+            if let Some(&parent_idx) = id_to_idx.get(parent_id.as_str()) {
+                children[parent_idx].push(i);
+            } else {
+                roots.push(i);
+            }
+        } else {
+            roots.push(i);
+        }
+    }
+
+    // Sort roots and children by timestamp
+    roots.sort_by_key(|&i| spans[i].timestamp);
+    for ch in &mut children {
+        ch.sort_by_key(|&i| spans[i].timestamp);
+    }
+
+    // DFS to build ordered list with depth
+    let mut result = Vec::new();
+    let mut stack: Vec<(usize, usize)> = roots.iter().rev().map(|&i| (i, 0)).collect();
+
+    while let Some((idx, depth)) = stack.pop() {
+        let span = &spans[idx];
+        let offset_ms = (span.timestamp - trace_start).num_microseconds().unwrap_or(0) as f64 / 1000.0;
+        let offset_pct = (offset_ms / total_duration_ms * 100.0).clamp(0.0, 100.0);
+        let width_pct = (span.duration_ms / total_duration_ms * 100.0).clamp(0.5, 100.0 - offset_pct);
+
+        let attrs_formatted = if let Some(obj) = span.attributes.as_object() {
+            serde_json::to_string_pretty(obj).unwrap_or_else(|_| "{}".to_string())
+        } else {
+            "{}".to_string()
+        };
+
+        let (kind_class, bar_class) = match span.kind.as_str() {
+            "server" => ("bg-blue-500/20 text-blue-300", "bg-blue-500"),
+            "client" => ("bg-green-500/20 text-green-300", "bg-green-500"),
+            "internal" => ("bg-gray-500/20 text-gray-300", "bg-gray-400"),
+            "producer" => ("bg-purple-500/20 text-purple-300", "bg-purple-500"),
+            "consumer" => ("bg-orange-500/20 text-orange-300", "bg-orange-500"),
+            _ => ("bg-gray-500/20 text-gray-400", "bg-primary"),
+        };
+        let (kind_class, bar_class) = if span.status == "error" {
+            (kind_class, "bg-error")
+        } else {
+            (kind_class, bar_class)
+        };
+
+        result.push(WaterfallSpan {
+            id: span.id.clone(),
+            name: span.name.clone(),
+            kind: span.kind.clone(),
+            kind_class: kind_class.to_string(),
+            bar_class: bar_class.to_string(),
+            status: span.status.clone(),
+            status_message: span.status_message.clone().unwrap_or_default(),
+            duration_ms: span.duration_ms,
+            duration_display: format_duration(span.duration_ms),
+            depth,
+            indent_px: depth * 20,
+            offset_pct,
+            width_pct,
+            has_error: span.status == "error",
+            attributes_json: attrs_formatted,
+            timestamp: span.timestamp.format("%H:%M:%S%.3f").to_string(),
+        });
+
+        // Push children in reverse order so first child is processed first
+        for &child_idx in children[idx].iter().rev() {
+            stack.push((child_idx, depth + 1));
+        }
+    }
+
+    result
+}
+
+pub async fn trace_detail_page(
+    State(state): State<AppState>,
+    Path((slug, trace_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    let pool_projects = db::projects::list_projects(&state.pool).await.unwrap_or_default();
+    let project_name = pool_projects.iter().find(|(_, _, s)| s == &slug)
+        .map(|(_, n, _)| n.clone()).unwrap_or_else(|| slug.clone());
+    let project_id = pool_projects.iter().find(|(_, _, s)| s == &slug)
+        .map(|(id, _, _)| *id);
+
+    let spans = db::spans::query_spans_by_trace(&state.pool, &trace_id).await.unwrap_or_default();
+    let related_logs = db::logs::query_logs_by_trace(&state.pool, &trace_id).await.unwrap_or_default();
+
+    let hosts_raw = if let Some(pid) = project_id {
+        db::projects::list_hosts(&state.pool, pid).await.unwrap_or_default()
+    } else {
+        vec![]
+    };
+    let host_map: std::collections::HashMap<Uuid, String> = hosts_raw.into_iter().collect();
+
+    // Build waterfall
+    let waterfall = build_waterfall(&spans);
+
+    // Trace-level summary
+    let root_name = spans.first().map(|s| s.name.clone()).unwrap_or_else(|| "Unknown".to_string());
+    let total_duration_ms: f64 = spans.iter().map(|s| s.duration_ms).fold(0.0_f64, f64::max);
+    let hostname = spans.first()
+        .map(|s| host_map.get(&s.host_id).cloned().unwrap_or_else(|| "unknown".to_string()))
+        .unwrap_or_else(|| "unknown".to_string());
+    let status = spans.iter().find(|s| s.status == "error")
+        .map(|_| "error".to_string())
+        .unwrap_or_else(|| spans.first().map(|s| s.status.clone()).unwrap_or_else(|| "unset".to_string()));
+    let status_badge = match status.as_str() {
+        "error" => "badge-error",
+        "ok" => "badge-success",
+        _ => "badge-ghost",
+    };
+    let timestamp = spans.first()
+        .map(|s| s.timestamp.format("%Y-%m-%d %H:%M:%S%.3f").to_string())
+        .unwrap_or_default();
+
+    let trace_id_short = trace_id[..trace_id.len().min(16)].to_string();
+
+    // Related logs
+    let logs: Vec<TraceLogView> = related_logs.iter().map(|l| {
+        let level_badge = match l.level.as_str() {
+            "error" | "ERROR" => "badge-error",
+            "warn" | "WARN" => "badge-warning",
+            "info" | "INFO" => "badge-info",
+            "debug" | "DEBUG" => "badge-ghost",
+            _ => "badge-ghost",
+        };
+        TraceLogView {
+            timestamp: l.timestamp.format("%H:%M:%S%.3f").to_string(),
+            level: l.level.to_uppercase(),
+            level_badge: level_badge.to_string(),
+            message: l.message.clone(),
+            span_id: l.span_id.clone().unwrap_or_default(),
+        }
+    }).collect();
+
+    let content = (TraceDetailTemplate {
+        project_slug: slug.clone(),
+        project_name: project_name.clone(),
+        trace_id: trace_id.clone(),
+        trace_id_short,
+        root_name,
+        total_duration: format_duration(total_duration_ms),
+        span_count: spans.len(),
+        hostname,
+        status: status.to_uppercase(),
+        status_badge: status_badge.to_string(),
+        timestamp,
+        log_count: logs.len(),
+        spans: waterfall,
+        logs,
+    }).render().unwrap_or_default();
+
+    Html(render_page(
+        &format!("Trace {} - {}", &trace_id[..trace_id.len().min(8)], project_name),
+        &pool_projects,
+        &slug,
+        "traces",
+        content,
+    ))
+}
+
 // --- API endpoints ---
 
 fn empty_string_as_none<'de, D: Deserializer<'de>>(de: D) -> Result<Option<String>, D::Error> {
@@ -662,7 +902,7 @@ pub async fn traces_data(
 
     let rows: String = traces.iter().map(|t| {
         let hostname = host_map.get(&t.host_id).map(|s| s.as_str()).unwrap_or("unknown");
-        render_trace_row(t, hostname)
+        render_trace_row(t, hostname, &slug)
     }).collect::<Vec<_>>().join("\n");
 
     Html(format!(
