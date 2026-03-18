@@ -1,39 +1,380 @@
 <!-- Metrics Header -->
-<div class="p-4 border-b border-base-300 flex items-center justify-between">
+<div class="p-4 border-b border-base-300 flex items-center justify-between flex-wrap gap-2">
     <h2 class="text-lg font-bold">Metrics - {{ project_name }}</h2>
+    <div class="flex items-center gap-2">
+        <!-- Time range -->
+        <div class="btn-group">
+            <button class="btn btn-xs range-btn" data-range="1h" onclick="setRange('1h')">1h</button>
+            <button class="btn btn-xs range-btn btn-active" data-range="6h" onclick="setRange('6h')">6h</button>
+            <button class="btn btn-xs range-btn" data-range="24h" onclick="setRange('24h')">24h</button>
+            <button class="btn btn-xs range-btn" data-range="7d" onclick="setRange('7d')">7d</button>
+        </div>
+        <!-- Host filter -->
+        <select id="hostFilter" class="select select-xs select-bordered" onchange="setHostFilter(this.value)">
+            <option value="all">All Hosts</option>
+            {% for h in hosts %}
+            <option value="{{ h.id }}">{{ h.hostname }}</option>
+            {% endfor %}
+        </select>
+        <!-- Live/Pause -->
+        <button id="liveToggle" class="btn btn-xs btn-success gap-1" onclick="toggleLive()">
+            <span id="liveIndicator" class="w-2 h-2 rounded-full bg-success-content animate-pulse"></span>
+            <span id="liveLabel">Live</span>
+        </button>
+    </div>
 </div>
 
-<!-- Metrics Table -->
+<!-- Dashboard Grid -->
 <div class="flex-1 overflow-y-auto p-4">
-    {% if metrics.is_empty() %}
-    <div class="text-center py-12 opacity-60">
-        <i class="lni lni-bar-chart" style="font-size: 3rem;"></i>
-        <p class="mt-4">No metrics received yet. Metrics will appear once your application exports them via OTLP.</p>
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4" id="chartsGrid">
+        <!-- CPU Usage -->
+        <div class="card bg-base-200 shadow-sm">
+            <div class="card-body p-4">
+                <h3 class="card-title text-sm">CPU Usage</h3>
+                <div id="chart-cpu" class="w-full" style="height: 200px;"></div>
+            </div>
+        </div>
+
+        <!-- Load Average -->
+        <div class="card bg-base-200 shadow-sm">
+            <div class="card-body p-4">
+                <h3 class="card-title text-sm">Load Average</h3>
+                <div id="chart-load" class="w-full" style="height: 200px;"></div>
+            </div>
+        </div>
+
+        <!-- Memory Usage % -->
+        <div class="card bg-base-200 shadow-sm">
+            <div class="card-body p-4">
+                <h3 class="card-title text-sm">Memory Usage</h3>
+                <div id="chart-mem" class="w-full" style="height: 200px;"></div>
+            </div>
+        </div>
+
+        <!-- Disk Usage % -->
+        <div class="card bg-base-200 shadow-sm">
+            <div class="card-body p-4">
+                <h3 class="card-title text-sm">Disk Usage</h3>
+                <div id="chart-disk" class="w-full" style="height: 200px;"></div>
+            </div>
+        </div>
+
+        <!-- Network I/O -->
+        <div class="card bg-base-200 shadow-sm">
+            <div class="card-body p-4">
+                <h3 class="card-title text-sm">Network I/O</h3>
+                <div id="chart-net" class="w-full" style="height: 200px;"></div>
+            </div>
+        </div>
+
+        <!-- Process Count -->
+        <div class="card bg-base-200 shadow-sm">
+            <div class="card-body p-4">
+                <h3 class="card-title text-sm">Process Count</h3>
+                <div id="chart-proc" class="w-full" style="height: 200px;"></div>
+            </div>
+        </div>
     </div>
-    {% else %}
-    <div class="overflow-x-auto">
-        <table class="table table-sm">
-            <thead>
-                <tr>
-                    <th>Metric Name</th>
-                    <th>Latest Value</th>
-                    <th>Unit</th>
-                    <th>Host</th>
-                    <th>Last Update</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for m in metrics %}
-                <tr class="hover">
-                    <td class="font-mono text-sm">{{ m.metric_name }}</td>
-                    <td class="font-mono text-sm">{{ m.value }}</td>
-                    <td class="text-xs opacity-70">{{ m.unit }}</td>
-                    <td class="text-xs opacity-70">{{ m.hostname }}</td>
-                    <td class="text-xs opacity-70">{{ m.timestamp }}</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-    {% endif %}
 </div>
+
+<!-- uPlot CSS + JS from CDN -->
+<link rel="stylesheet" href="https://unpkg.com/uplot@1.6.31/dist/uPlot.min.css">
+<script src="https://unpkg.com/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
+
+<script>
+const SLUG = "{{ project_slug }}";
+const HOST_COLORS = ["#36a2eb", "#4bc0c0", "#ff6384", "#ff9f40", "#9966ff", "#ffcd56"];
+
+let currentRange = "6h";
+let currentHost = "all";
+let isLive = true;
+let sseBuffer = [];
+let charts = {};
+let eventSource = null;
+
+// Chart definitions: id -> { metrics, yMax, format, multiMetric }
+const CHART_DEFS = {
+    "chart-cpu":  { metrics: ["system.cpu.utilization"], yMax: 100, format: "pct" },
+    "chart-load": { metrics: ["system.cpu.load_average.1m", "system.cpu.load_average.5m", "system.cpu.load_average.15m"], yMax: null, format: "num", multiMetric: true },
+    "chart-mem":  { metrics: ["system.memory.utilization"], yMax: 100, format: "pct" },
+    "chart-disk": { metrics: ["system.disk.utilization"], yMax: 100, format: "pct" },
+    "chart-net":  { metrics: ["system.network.io.receive", "system.network.io.transmit"], yMax: null, format: "bytes", multiMetric: true },
+    "chart-proc": { metrics: ["system.process.count"], yMax: null, format: "num" },
+};
+
+function formatBytes(v) {
+    if (v == null) return "";
+    if (v >= 1e9) return (v / 1e9).toFixed(1) + " GB";
+    if (v >= 1e6) return (v / 1e6).toFixed(1) + " MB";
+    if (v >= 1e3) return (v / 1e3).toFixed(1) + " KB";
+    return v.toFixed(0) + " B";
+}
+
+function formatPct(v) { return v == null ? "" : v.toFixed(1) + "%"; }
+function formatNum(v) { return v == null ? "" : v.toFixed(1); }
+
+function getFormatter(fmt) {
+    if (fmt === "pct") return formatPct;
+    if (fmt === "bytes") return formatBytes;
+    return formatNum;
+}
+
+function createChart(elId, seriesLabels, data, opts) {
+    const el = document.getElementById(elId);
+    if (!el) return null;
+    el.innerHTML = "";
+
+    const width = el.clientWidth || 400;
+    const formatter = getFormatter(opts.format);
+
+    const series = [{ label: "Time" }];
+    seriesLabels.forEach((label, i) => {
+        series.push({
+            label: label,
+            stroke: HOST_COLORS[i % HOST_COLORS.length],
+            width: 2,
+            fill: opts.format === "bytes" ? HOST_COLORS[i % HOST_COLORS.length] + "20" : undefined,
+        });
+    });
+
+    const uOpts = {
+        width: width,
+        height: 200,
+        series: series,
+        axes: [
+            { stroke: "#666", grid: { stroke: "#333" } },
+            {
+                stroke: "#666",
+                grid: { stroke: "#333" },
+                values: (u, vals) => vals.map(v => formatter(v)),
+                ...(opts.yMax ? { range: [0, opts.yMax] } : {}),
+            },
+        ],
+        cursor: { show: true },
+        legend: { show: seriesLabels.length > 1 },
+        padding: [8, 8, 0, 0],
+    };
+
+    const chart = new uPlot(uOpts, data, el);
+    return chart;
+}
+
+async function fetchTimeseries(metric, host, range) {
+    const url = `/api/metrics/${SLUG}/timeseries?metric=${encodeURIComponent(metric)}&host=${host}&range=${range}`;
+    const resp = await fetch(url);
+    if (!resp.ok) return null;
+    return await resp.json();
+}
+
+async function loadChart(chartId, def) {
+    if (def.multiMetric) {
+        // Multiple metrics on one chart (e.g., load avg 1m/5m/15m or net rx/tx)
+        const allData = await Promise.all(def.metrics.map(m => fetchTimeseries(m, currentHost, currentRange)));
+        const validData = allData.filter(d => d && d.timestamps.length > 0);
+        if (validData.length === 0) {
+            document.getElementById(chartId).innerHTML = '<p class="text-center opacity-40 py-8 text-sm">No data</p>';
+            charts[chartId] = null;
+            return;
+        }
+
+        // Use longest timestamp array as base
+        let timestamps = validData[0].timestamps;
+        const labels = [];
+        const seriesData = [timestamps];
+
+        for (let i = 0; i < def.metrics.length; i++) {
+            const d = allData[i];
+            if (!d || d.timestamps.length === 0) continue;
+
+            // For multi-metric, if host=all, we might have multiple hosts per metric
+            // Show each host+metric combination as separate series
+            if (d.series.length > 1) {
+                for (const s of d.series) {
+                    const shortMetric = def.metrics[i].split(".").pop();
+                    labels.push(`${s.host} ${shortMetric}`);
+                    // Align values to base timestamps
+                    const tsMap = {};
+                    d.timestamps.forEach((ts, idx) => { tsMap[ts] = s.values[idx]; });
+                    seriesData.push(timestamps.map(ts => tsMap[ts] ?? null));
+                }
+            } else if (d.series.length === 1) {
+                const shortMetric = def.metrics[i].split(".").pop();
+                const hostLabel = d.series[0].host;
+                labels.push(`${hostLabel} ${shortMetric}`);
+                const tsMap = {};
+                d.timestamps.forEach((ts, idx) => { tsMap[ts] = d.series[0].values[idx]; });
+                seriesData.push(timestamps.map(ts => tsMap[ts] ?? null));
+            }
+        }
+
+        if (labels.length === 0) {
+            document.getElementById(chartId).innerHTML = '<p class="text-center opacity-40 py-8 text-sm">No data</p>';
+            charts[chartId] = null;
+            return;
+        }
+
+        charts[chartId] = createChart(chartId, labels, seriesData, def);
+    } else {
+        // Single metric, per-host series
+        const data = await fetchTimeseries(def.metrics[0], currentHost, currentRange);
+        if (!data || data.timestamps.length === 0) {
+            document.getElementById(chartId).innerHTML = '<p class="text-center opacity-40 py-8 text-sm">No data</p>';
+            charts[chartId] = null;
+            return;
+        }
+
+        const labels = data.series.map(s => s.host);
+        const seriesData = [data.timestamps, ...data.series.map(s => s.values)];
+        charts[chartId] = createChart(chartId, labels, seriesData, def);
+    }
+}
+
+async function loadAllCharts() {
+    const promises = Object.entries(CHART_DEFS).map(([id, def]) => loadChart(id, def));
+    await Promise.all(promises);
+}
+
+function setRange(range) {
+    currentRange = range;
+    document.querySelectorAll(".range-btn").forEach(b => {
+        b.classList.toggle("btn-active", b.dataset.range === range);
+    });
+    loadAllCharts();
+}
+
+function setHostFilter(host) {
+    currentHost = host;
+    loadAllCharts();
+}
+
+function toggleLive() {
+    isLive = !isLive;
+    const btn = document.getElementById("liveToggle");
+    const indicator = document.getElementById("liveIndicator");
+    const label = document.getElementById("liveLabel");
+
+    if (isLive) {
+        btn.className = "btn btn-xs btn-success gap-1";
+        indicator.className = "w-2 h-2 rounded-full bg-success-content animate-pulse";
+        label.textContent = "Live";
+        // Flush buffer
+        flushBuffer();
+    } else {
+        btn.className = "btn btn-xs btn-ghost gap-1";
+        indicator.className = "w-2 h-2 rounded-full bg-base-content opacity-30";
+        label.textContent = "Paused";
+    }
+}
+
+function flushBuffer() {
+    for (const event of sseBuffer) {
+        applyMetricEvent(event);
+    }
+    sseBuffer = [];
+}
+
+function applyMetricEvent(eventData) {
+    const ts = eventData.timestamp;
+    const metricsMap = eventData.metrics;
+
+    for (const [chartId, def] of Object.entries(CHART_DEFS)) {
+        const chart = charts[chartId];
+        if (!chart) continue;
+
+        // Check if any of this chart's metrics are in the event
+        let hasData = false;
+        for (const metricName of def.metrics) {
+            if (metricsMap[metricName]) {
+                hasData = true;
+                break;
+            }
+        }
+        if (!hasData) continue;
+
+        // Append new point to chart data
+        const data = chart.data;
+        const newTs = [...data[0], ts];
+
+        if (def.multiMetric) {
+            // For multi-metric charts, we need to match series by label
+            const newData = [newTs];
+            for (let i = 1; i < data.length; i++) {
+                const seriesLabel = chart.series[i].label || "";
+                let newVal = null;
+                // Try to find matching metric+host
+                for (const metricName of def.metrics) {
+                    const shortMetric = metricName.split(".").pop();
+                    if (seriesLabel.includes(shortMetric) && metricsMap[metricName]) {
+                        for (const [host, val] of Object.entries(metricsMap[metricName])) {
+                            if (seriesLabel.includes(host)) {
+                                newVal = val;
+                                break;
+                            }
+                        }
+                    }
+                    if (newVal !== null) break;
+                }
+                newData.push([...data[i], newVal]);
+            }
+            chart.setData(newData);
+        } else {
+            const metricName = def.metrics[0];
+            const hostValues = metricsMap[metricName] || {};
+            const newData = [newTs];
+            for (let i = 1; i < data.length; i++) {
+                const hostLabel = chart.series[i].label || "";
+                const val = hostValues[hostLabel] ?? null;
+                newData.push([...data[i], val]);
+            }
+            chart.setData(newData);
+        }
+    }
+}
+
+function connectSSE() {
+    eventSource = new EventSource(`/sse/metrics/${SLUG}`);
+
+    eventSource.addEventListener("metrics", (e) => {
+        try {
+            const data = JSON.parse(e.data);
+            if (isLive) {
+                applyMetricEvent(data);
+            } else {
+                sseBuffer.push(data);
+            }
+        } catch (err) {
+            console.error("Failed to parse metric event:", err);
+        }
+    });
+
+    eventSource.onerror = () => {
+        eventSource.close();
+        setTimeout(connectSSE, 5000);
+    };
+}
+
+// Handle chart resize
+const resizeObserver = new ResizeObserver(() => {
+    for (const [chartId, chart] of Object.entries(charts)) {
+        if (!chart) continue;
+        const el = document.getElementById(chartId);
+        if (el) {
+            chart.setSize({ width: el.clientWidth, height: 200 });
+        }
+    }
+});
+
+// Init
+document.addEventListener("DOMContentLoaded", async () => {
+    const grid = document.getElementById("chartsGrid");
+    if (grid) resizeObserver.observe(grid);
+
+    await loadAllCharts();
+    connectSSE();
+});
+
+// Cleanup on page leave
+window.addEventListener("beforeunload", () => {
+    if (eventSource) eventSource.close();
+});
+</script>

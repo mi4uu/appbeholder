@@ -7,17 +7,24 @@ pub struct LogEvent {
     pub html: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct MetricEvent {
+    pub json: String,
+}
+
 const CHANNEL_CAPACITY: usize = 256;
 
 #[derive(Clone)]
 pub struct SseChannels {
     log_channels: Arc<RwLock<HashMap<String, broadcast::Sender<LogEvent>>>>,
+    metric_channels: Arc<RwLock<HashMap<String, broadcast::Sender<MetricEvent>>>>,
 }
 
 impl SseChannels {
     pub fn new() -> Self {
         Self {
             log_channels: Arc::new(RwLock::new(HashMap::new())),
+            metric_channels: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -41,6 +48,31 @@ impl SseChannels {
         // Create new channel
         let mut channels = self.log_channels.write().await;
         // Double-check after acquiring write lock
+        if let Some(tx) = channels.get(project_slug) {
+            return tx.subscribe();
+        }
+
+        let (tx, rx) = broadcast::channel(CHANNEL_CAPACITY);
+        channels.insert(project_slug.to_string(), tx);
+        rx
+    }
+
+    pub async fn publish_metrics(&self, project_slug: &str, event: MetricEvent) {
+        let channels = self.metric_channels.read().await;
+        if let Some(tx) = channels.get(project_slug) {
+            let _ = tx.send(event);
+        }
+    }
+
+    pub async fn subscribe_metrics(&self, project_slug: &str) -> broadcast::Receiver<MetricEvent> {
+        {
+            let channels = self.metric_channels.read().await;
+            if let Some(tx) = channels.get(project_slug) {
+                return tx.subscribe();
+            }
+        }
+
+        let mut channels = self.metric_channels.write().await;
         if let Some(tx) = channels.get(project_slug) {
             return tx.subscribe();
         }

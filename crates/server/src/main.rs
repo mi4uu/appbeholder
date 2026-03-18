@@ -102,7 +102,8 @@ fn create_router(state: AppState) -> axum::Router {
         .route("/v1/metrics", post(api::otlp_metrics::ingest_metrics));
 
     let sse_routes = axum::Router::new()
-        .route("/logs/{slug}", get(web::sse_logs));
+        .route("/logs/{slug}", get(web::sse_logs))
+        .route("/metrics/{slug}", get(web::sse_metrics));
 
     let web_routes = axum::Router::new()
         .route("/", get(web::index))
@@ -117,7 +118,8 @@ fn create_router(state: AppState) -> axum::Router {
         .route("/projects/{slug}/traces/{trace_id}", get(web::trace_detail_page))
         .route("/api/logs/{slug}", get(web::logs_data))
         .route("/api/traces/{slug}", get(web::traces_data))
-        .route("/api/errors/{slug}", get(web::errors_data));
+        .route("/api/errors/{slug}", get(web::errors_data))
+        .route("/api/metrics/{slug}/timeseries", get(web::metrics_timeseries_api));
 
     axum::Router::new()
         .nest("/api", api_routes)

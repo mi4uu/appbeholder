@@ -80,3 +80,41 @@ pub async fn batch_insert_metrics(pool: &Pool, entries: &[MetricEntry]) -> Resul
     transaction.commit().await?;
     Ok(())
 }
+
+pub struct TimeseriesPoint {
+    pub timestamp: DateTime<Utc>,
+    pub value: f64,
+    pub host_id: Uuid,
+}
+
+pub async fn query_metrics_timeseries(
+    pool: &Pool,
+    project_id: Uuid,
+    metric_name: &str,
+    host_id: Option<Uuid>,
+    since: DateTime<Utc>,
+) -> Result<Vec<TimeseriesPoint>, Box<dyn std::error::Error>> {
+    let client = pool.get().await?;
+
+    let rows = if let Some(hid) = host_id {
+        client.query(
+            "SELECT timestamp, value, host_id FROM metrics
+             WHERE project_id = $1 AND metric_name = $2 AND host_id = $3 AND timestamp >= $4
+             ORDER BY timestamp ASC",
+            &[&project_id, &metric_name, &hid, &since],
+        ).await?
+    } else {
+        client.query(
+            "SELECT timestamp, value, host_id FROM metrics
+             WHERE project_id = $1 AND metric_name = $2 AND timestamp >= $3
+             ORDER BY timestamp ASC",
+            &[&project_id, &metric_name, &since],
+        ).await?
+    };
+
+    Ok(rows.iter().map(|r| TimeseriesPoint {
+        timestamp: r.get(0),
+        value: r.get(1),
+        host_id: r.get(2),
+    }).collect())
+}

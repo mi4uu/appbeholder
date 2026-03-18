@@ -3,9 +3,11 @@ use axum::http::StatusCode;
 use serde::Deserialize;
 use uuid::Uuid;
 
+use std::collections::HashMap;
 use crate::api::otlp_types::{attributes_to_json, nanos_to_datetime, InstrumentationScope, KeyValue, Resource};
 use crate::db;
 use crate::db::metrics::{batch_insert_metrics, MetricEntry};
+use crate::sse::channels::MetricEvent;
 use crate::AppState;
 
 #[derive(Debug, Deserialize)]
@@ -70,9 +72,10 @@ pub async fn ingest_metrics(
     Json(req): Json<ExportMetricsServiceRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     let mut all_metrics = Vec::new();
+    // SSE data: slug -> metric_name -> hostname -> latest value
+    let mut sse_data: HashMap<String, HashMap<String, HashMap<String, f64>>> = HashMap::new();
 
     for resource_metric in req.resource_metrics {
-        // Extract resource attributes
         let service_name = resource_metric
             .resource
             .as_ref()
@@ -85,7 +88,6 @@ pub async fn ingest_metrics(
             .map(|r| r.host_name())
             .unwrap_or_else(|| "unknown".to_string());
 
-        // Get or create project and host
         let project_id = db::projects::get_or_create_project(&state.pool, &service_name)
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -94,12 +96,10 @@ pub async fn ingest_metrics(
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-        // Process metrics
         for scope_metric in resource_metric.scope_metrics {
             for metric in scope_metric.metrics {
                 let unit = metric.unit.unwrap_or_else(|| "".to_string());
 
-                // Collect data points from gauge or sum
                 let data_points = if let Some(gauge) = metric.gauge {
                     gauge.data_points
                 } else if let Some(sum) = metric.sum {
@@ -108,11 +108,9 @@ pub async fn ingest_metrics(
                     Vec::new()
                 };
 
-                // Convert each data point to MetricEntry
                 for point in data_points {
                     let timestamp = nanos_to_datetime(&point.time_unix_nano);
 
-                    // Extract value (prefer asDouble, fallback to asInt)
                     let value = if let Some(double_val) = point.as_double {
                         double_val
                     } else if let Some(int_str) = point.as_int {
@@ -121,7 +119,15 @@ pub async fn ingest_metrics(
                         0.0
                     };
 
-                    let entry = MetricEntry {
+                    // Collect for SSE broadcast
+                    sse_data
+                        .entry(service_name.clone())
+                        .or_default()
+                        .entry(metric.name.clone())
+                        .or_default()
+                        .insert(hostname.clone(), value);
+
+                    all_metrics.push(MetricEntry {
                         id: Uuid::new_v4(),
                         project_id,
                         host_id,
@@ -130,9 +136,7 @@ pub async fn ingest_metrics(
                         value,
                         unit: unit.clone(),
                         attributes: attributes_to_json(&point.attributes),
-                    };
-
-                    all_metrics.push(entry);
+                    });
                 }
             }
         }
@@ -143,6 +147,18 @@ pub async fn ingest_metrics(
     batch_insert_metrics(&state.pool, &all_metrics)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // Broadcast SSE events per project slug
+    for (slug, metrics_map) in sse_data {
+        let ts = chrono::Utc::now().timestamp();
+        let payload = serde_json::json!({
+            "timestamp": ts,
+            "metrics": metrics_map,
+        });
+        state.sse.publish_metrics(&slug, MetricEvent {
+            json: payload.to_string(),
+        }).await;
+    }
 
     tracing::info!("Ingested {} metrics via OTLP", metric_count);
 

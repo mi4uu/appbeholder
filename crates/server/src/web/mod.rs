@@ -1,11 +1,12 @@
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    response::{Html, IntoResponse, Redirect, Sse},
+    response::{Html, IntoResponse, Json, Redirect, Sse},
 };
 use axum_extra::extract::cookie::SignedCookieJar;
 use askama::Template;
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
+use std::collections::HashMap;
 use std::convert::Infallible;
 use uuid::Uuid;
 
@@ -135,20 +136,12 @@ struct TraceDetailTemplate {
     log_count: usize,
 }
 
-pub struct MetricView {
-    pub metric_name: String,
-    pub value: String,
-    pub unit: String,
-    pub hostname: String,
-    pub timestamp: String,
-}
-
 #[derive(Template)]
 #[template(path = "metrics.html")]
 struct MetricsTemplate {
     project_slug: String,
     project_name: String,
-    metrics: Vec<MetricView>,
+    hosts: Vec<HostInfo>,
 }
 
 #[derive(Template)]
@@ -545,21 +538,11 @@ pub async fn metrics_page(
     let project_name = pool_projects.iter().find(|(_, _, s)| s == &slug).map(|(_, n, _)| n.clone()).unwrap_or_else(|| slug.clone());
     let project_id = pool_projects.iter().find(|(_, _, s)| s == &slug).map(|(id, _, _)| *id);
 
-    let hosts_raw = if let Some(pid) = project_id {
-        db::projects::list_hosts(&state.pool, pid).await.unwrap_or_default()
-    } else {
-        vec![]
-    };
-    let host_map: std::collections::HashMap<Uuid, String> = hosts_raw.iter().cloned().collect();
-
-    let metrics: Vec<MetricView> = if let Some(pid) = project_id {
-        let summaries = db::metrics::query_metrics_summary(&state.pool, pid).await.unwrap_or_default();
-        summaries.iter().map(|m| MetricView {
-            metric_name: m.metric_name.clone(),
-            value: format!("{:.4}", m.value),
-            unit: m.unit.clone(),
-            hostname: host_map.get(&m.host_id).cloned().unwrap_or_else(|| "unknown".to_string()),
-            timestamp: m.timestamp.format("%Y-%m-%d %H:%M:%S").to_string(),
+    let hosts: Vec<HostInfo> = if let Some(pid) = project_id {
+        let hosts_raw = db::projects::list_hosts(&state.pool, pid).await.unwrap_or_default();
+        hosts_raw.iter().map(|(id, name)| HostInfo {
+            id: id.to_string(),
+            hostname: name.clone(),
         }).collect()
     } else {
         vec![]
@@ -568,10 +551,131 @@ pub async fn metrics_page(
     let content = (MetricsTemplate {
         project_slug: slug.clone(),
         project_name: project_name.clone(),
-        metrics,
+        hosts,
     }).render().unwrap_or_default();
 
     Html(render_page(&format!("Metrics - {}", project_name), &pool_projects, &slug, "metrics", content))
+}
+
+// --- Metrics Timeseries API ---
+
+#[derive(Deserialize)]
+pub struct TimeseriesQuery {
+    pub metric: String,
+    #[serde(default)]
+    pub host: Option<String>,
+    #[serde(default = "default_range")]
+    pub range: String,
+}
+
+fn default_range() -> String { "1h".to_string() }
+
+#[derive(Serialize)]
+pub struct TimeseriesSeries {
+    pub host: String,
+    pub values: Vec<Option<f64>>,
+}
+
+#[derive(Serialize)]
+pub struct TimeseriesResponse {
+    pub timestamps: Vec<i64>,
+    pub series: Vec<TimeseriesSeries>,
+}
+
+pub async fn metrics_timeseries_api(
+    State(state): State<AppState>,
+    Path(slug): Path<String>,
+    Query(query): Query<TimeseriesQuery>,
+) -> impl IntoResponse {
+    let pool_projects = db::projects::list_projects(&state.pool).await.unwrap_or_default();
+    let project_id = match pool_projects.iter().find(|(_, _, s)| s == &slug).map(|(id, _, _)| *id) {
+        Some(id) => id,
+        None => return Json(TimeseriesResponse { timestamps: vec![], series: vec![] }),
+    };
+
+    let since = match query.range.as_str() {
+        "6h" => chrono::Utc::now() - chrono::Duration::hours(6),
+        "24h" => chrono::Utc::now() - chrono::Duration::hours(24),
+        "7d" => chrono::Utc::now() - chrono::Duration::days(7),
+        _ => chrono::Utc::now() - chrono::Duration::hours(1),
+    };
+
+    // Resolve host filter
+    let host_id = if let Some(ref h) = query.host {
+        if h == "all" || h.is_empty() {
+            None
+        } else {
+            h.parse::<Uuid>().ok()
+        }
+    } else {
+        None
+    };
+
+    let points = db::metrics::query_metrics_timeseries(
+        &state.pool, project_id, &query.metric, host_id, since,
+    ).await.unwrap_or_default();
+
+    if points.is_empty() {
+        return Json(TimeseriesResponse { timestamps: vec![], series: vec![] });
+    }
+
+    // Get host names
+    let hosts_raw = db::projects::list_hosts(&state.pool, project_id).await.unwrap_or_default();
+    let host_map: HashMap<Uuid, String> = hosts_raw.into_iter().collect();
+
+    // Group points by host
+    let mut host_points: HashMap<String, Vec<(i64, f64)>> = HashMap::new();
+    for p in &points {
+        let hostname = host_map.get(&p.host_id).cloned().unwrap_or_else(|| "unknown".to_string());
+        host_points.entry(hostname).or_default().push((p.timestamp.timestamp(), p.value));
+    }
+
+    // Build aligned timestamp array (union of all timestamps)
+    let mut all_ts: Vec<i64> = points.iter().map(|p| p.timestamp.timestamp()).collect();
+    all_ts.sort();
+    all_ts.dedup();
+
+    // Build series with aligned values
+    let series: Vec<TimeseriesSeries> = host_points.into_iter().map(|(host, pts)| {
+        let pts_map: HashMap<i64, f64> = pts.into_iter().collect();
+        let values: Vec<Option<f64>> = all_ts.iter().map(|ts| pts_map.get(ts).copied()).collect();
+        TimeseriesSeries { host, values }
+    }).collect();
+
+    Json(TimeseriesResponse { timestamps: all_ts, series })
+}
+
+// --- SSE Metrics ---
+
+pub async fn sse_metrics(
+    State(state): State<AppState>,
+    Path(slug): Path<String>,
+) -> Sse<impl futures::Stream<Item = Result<axum::response::sse::Event, Infallible>>> {
+    let mut rx = state.sse.subscribe_metrics(&slug).await;
+
+    let stream = async_stream::stream! {
+        loop {
+            match rx.recv().await {
+                Ok(event) => {
+                    yield Ok(axum::response::sse::Event::default()
+                        .event("metrics")
+                        .data(event.json));
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!("SSE metrics client lagged by {} messages", n);
+                    continue;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    break;
+                }
+            }
+        }
+    };
+
+    Sse::new(stream).keep_alive(
+        axum::response::sse::KeepAlive::new()
+            .interval(std::time::Duration::from_secs(15))
+    )
 }
 
 // --- Hosts page ---
