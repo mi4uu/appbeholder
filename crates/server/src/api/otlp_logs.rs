@@ -168,6 +168,22 @@ pub async fn ingest_logs(
                     None
                 };
 
+                let is_error = level == "error" || level == "fatal";
+
+                let stack_trace = if is_error {
+                    record.attributes.iter()
+                        .find(|kv| kv.key == "exception.stacktrace")
+                        .and_then(|kv| kv.value.as_string())
+                } else {
+                    None
+                };
+
+                let fingerprint = if is_error {
+                    Some(crate::api::errors::compute_fingerprint(&message, &stack_trace))
+                } else {
+                    None
+                };
+
                 let entry = LogEntry {
                     id: Uuid::new_v4(),
                     project_id,
@@ -178,9 +194,9 @@ pub async fn ingest_logs(
                     source: "backend".to_string(),
                     trace_id,
                     span_id,
-                    fingerprint: None,
+                    fingerprint,
                     attributes: attributes_to_json(&record.attributes),
-                    stack_trace: None,
+                    stack_trace,
                 };
 
                 insert_log(&state.pool, &entry)
@@ -195,6 +211,14 @@ pub async fn ingest_logs(
                         );
                         (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
                     })?;
+
+                if is_error {
+                    if let Some(ref fp) = entry.fingerprint {
+                        let _ = crate::db::errors::upsert_error_group(
+                            &state.pool, project_id, fp, &entry.message, &hostname, entry.timestamp,
+                        ).await;
+                    }
+                }
 
                 // Publish to SSE
                 let html = render_log_row(&entry, &hostname);

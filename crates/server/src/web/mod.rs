@@ -72,6 +72,23 @@ struct ErrorsTemplate {
     project_name: String,
     hosts: Vec<HostInfo>,
     errors_html: String,
+    view_mode: String,
+}
+
+#[allow(dead_code)]
+pub struct ErrorGroupView {
+    pub id: String,
+    pub fingerprint: String,
+    pub message: String,
+    pub first_seen: String,
+    pub last_seen: String,
+    pub count: i64,
+    pub status: String,
+    pub is_active: bool,
+    pub is_resolved: bool,
+    pub is_ignored: bool,
+    pub hosts: Vec<String>,
+    pub sparkline_svg: String,
 }
 
 pub struct HostDetailView {
@@ -474,6 +491,149 @@ pub async fn traces_page(
 
 // --- Errors page ---
 
+fn render_sparkline_svg(values: &[i64]) -> String {
+    if values.is_empty() {
+        return String::new();
+    }
+    let max_val = values.iter().copied().max().unwrap_or(1).max(1) as f64;
+    let w = 120.0_f64;
+    let h = 24.0_f64;
+    let step = w / (values.len().max(1) as f64 - 1.0).max(1.0);
+
+    let points: String = values.iter().enumerate().map(|(i, &v)| {
+        let x = i as f64 * step;
+        let y = h - (v as f64 / max_val * h);
+        format!("{:.1},{:.1}", x, y)
+    }).collect::<Vec<_>>().join(" ");
+
+    format!(
+        r#"<svg width="{}" height="{}" viewBox="0 0 {} {}" class="inline-block opacity-70"><polyline points="{}" fill="none" stroke="oklch(var(--er))" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>"#,
+        w as i32, h as i32, w as i32, h as i32, points
+    )
+}
+
+fn render_error_group_row(group: &ErrorGroupView, slug: &str) -> String {
+    let escaped_msg = group.message
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
+
+    let truncated_msg = if escaped_msg.len() > 120 {
+        format!("{}...", &escaped_msg[..120])
+    } else {
+        escaped_msg.clone()
+    };
+
+    let status_badge = match group.status.as_str() {
+        "resolved" => r#"<span class="badge badge-success badge-xs">RESOLVED</span>"#,
+        "ignored" => r#"<span class="badge badge-ghost badge-xs">IGNORED</span>"#,
+        _ => "",
+    };
+
+    let hosts_html: String = group.hosts.iter().map(|h| {
+        format!(r#"<span class="badge badge-ghost badge-xs">{}</span>"#, h)
+    }).collect::<Vec<_>>().join(" ");
+
+    let hx_include = r#"[id=&quot;host-filter&quot;], [id=&quot;search-filter&quot;], [id=&quot;view-mode&quot;], [id=&quot;status-filter&quot;]"#;
+
+    let action_btn = |action: &str, title: &str, icon: &str| -> String {
+        format!(
+            r##"<button class="btn btn-ghost btn-xs" hx-post="/api/errors/{slug}/group/{gid}/{action}" hx-target="#error-entries" hx-include="{hx}" title="{title}">{icon}</button>"##,
+            slug = slug, gid = group.id, action = action, hx = hx_include, title = title, icon = icon,
+        )
+    };
+
+    let mut actions = String::from(r#"<div class="flex gap-1">"#);
+    if group.is_active {
+        actions.push_str(&action_btn("resolve", "Resolve", "&#10003;"));
+    } else {
+        actions.push_str(&action_btn("reopen", "Reopen", "&#8634;"));
+    }
+    if !group.is_ignored {
+        actions.push_str(&action_btn("ignore", "Ignore", "&#10005;"));
+    }
+    actions.push_str("</div>");
+
+    let fp_short = &group.fingerprint[..group.fingerprint.len().min(8)];
+
+    format!(
+        r##"<div class="border-b border-base-200 hover:bg-base-200 p-2">
+            <div class="flex items-center gap-2 cursor-pointer" hx-get="/api/errors/{slug}/group/{fp}" hx-target="#detail-{fp_short}" hx-swap="innerHTML" hx-trigger="click" onclick="this.nextElementSibling.nextElementSibling.classList.toggle('hidden')">
+                <span class="badge badge-error badge-sm font-mono">{count}</span>
+                <span class="flex-1 text-sm font-mono truncate">{msg}</span>
+                {sparkline}
+                <span class="text-xs opacity-60 shrink-0">{last_seen}</span>
+                {status}
+            </div>
+            <div class="flex items-center gap-2 mt-1 ml-8">
+                <span class="text-xs opacity-50 font-mono">{fp_short}</span>
+                {hosts}
+                <span class="text-xs opacity-50">First: {first_seen}</span>
+                <div class="ml-auto">{actions}</div>
+            </div>
+            <div id="detail-{fp_short}" class="hidden mt-2 ml-8"></div>
+        </div>"##,
+        slug = slug,
+        fp = group.fingerprint,
+        fp_short = fp_short,
+        count = group.count,
+        msg = truncated_msg,
+        sparkline = group.sparkline_svg,
+        last_seen = group.last_seen,
+        status = status_badge,
+        hosts = hosts_html,
+        first_seen = group.first_seen,
+        actions = actions,
+    )
+}
+
+async fn render_error_groups_html(
+    pool: &deadpool_postgres::Pool,
+    pid: Uuid,
+    slug: &str,
+    status: Option<String>,
+    host: Option<String>,
+    search: Option<String>,
+) -> String {
+    let query = db::errors::ErrorGroupQuery {
+        project_id: pid,
+        status,
+        search,
+        host,
+        limit: 100,
+    };
+    let groups = db::errors::query_error_groups(pool, &query).await.unwrap_or_default();
+    if groups.is_empty() {
+        return r#"<div class="text-center py-12 opacity-60">
+            <i class="lni lni-warning" style="font-size: 3rem;"></i>
+            <p class="mt-4">No error groups found.</p>
+        </div>"#.to_string();
+    }
+
+    let mut rows = Vec::new();
+    for g in &groups {
+        let sparkline_data = db::errors::get_error_group_sparkline(pool, pid, &g.fingerprint)
+            .await
+            .unwrap_or_else(|_| vec![0; 24]);
+        let view = ErrorGroupView {
+            id: g.id.to_string(),
+            fingerprint: g.fingerprint.clone(),
+            message: g.message.clone(),
+            first_seen: g.first_seen.format("%Y-%m-%d %H:%M").to_string(),
+            last_seen: g.last_seen.format("%Y-%m-%d %H:%M").to_string(),
+            count: g.count,
+            status: g.status.clone(),
+            is_active: g.status == "active",
+            is_resolved: g.status == "resolved",
+            is_ignored: g.status == "ignored",
+            hosts: g.hosts.clone(),
+            sparkline_svg: render_sparkline_svg(&sparkline_data),
+        };
+        rows.push(render_error_group_row(&view, slug));
+    }
+    rows.join("\n")
+}
+
 pub async fn errors_page(
     State(state): State<AppState>,
     Path(slug): Path<String>,
@@ -493,27 +653,7 @@ pub async fn errors_page(
     }).collect();
 
     let errors_html = if let Some(pid) = project_id {
-        let query = db::logs::LogQuery {
-            project_id: pid,
-            level: Some("error".to_string()),
-            host_id: None,
-            search: None,
-            limit: 100,
-            before: None,
-        };
-        let logs = db::logs::query_logs(&state.pool, &query).await.unwrap_or_default();
-        if logs.is_empty() {
-            r#"<div class="text-center py-12 opacity-60">
-                <i class="lni lni-warning" style="font-size: 3rem;"></i>
-                <p class="mt-4">No errors found. That's a good thing!</p>
-            </div>"#.to_string()
-        } else {
-            let host_map: std::collections::HashMap<Uuid, String> = hosts_raw.iter().cloned().collect();
-            logs.iter().rev().map(|l| {
-                let hostname = host_map.get(&l.host_id).map(|s| s.as_str()).unwrap_or("unknown");
-                crate::api::logs::render_log_row(l, hostname)
-            }).collect::<Vec<_>>().join("\n")
-        }
+        render_error_groups_html(&state.pool, pid, &slug, None, None, None).await
     } else {
         String::new()
     };
@@ -523,6 +663,7 @@ pub async fn errors_page(
         project_name: project_name.clone(),
         hosts,
         errors_html,
+        view_mode: "grouped".to_string(),
     }).render().unwrap_or_default();
 
     Html(render_page(&format!("Errors - {}", project_name), &pool_projects, &slug, "errors", content))
@@ -1036,6 +1177,10 @@ pub struct ErrorsQuery {
     host_id: Option<Uuid>,
     #[serde(default, deserialize_with = "empty_string_as_none")]
     search: Option<String>,
+    #[serde(default, deserialize_with = "empty_string_as_none")]
+    view: Option<String>,
+    #[serde(default, deserialize_with = "empty_string_as_none")]
+    status: Option<String>,
 }
 
 pub async fn errors_data(
@@ -1050,30 +1195,122 @@ pub async fn errors_data(
         return Html(String::new());
     };
 
+    let view = params.view.as_deref().unwrap_or("grouped");
+
+    if view == "flat" {
+        let hosts = db::projects::list_hosts(&state.pool, pid).await.unwrap_or_default();
+        let host_map: std::collections::HashMap<Uuid, String> = hosts.into_iter().collect();
+
+        let query = db::logs::LogQuery {
+            project_id: pid,
+            level: Some("error".to_string()),
+            host_id: params.host_id,
+            search: params.search,
+            limit: 100,
+            before: None,
+        };
+
+        let logs = db::logs::query_logs(&state.pool, &query).await.unwrap_or_default();
+        if logs.is_empty() {
+            return Html(r#"<div class="text-center py-12 opacity-60">
+                <p>No matching errors found.</p>
+            </div>"#.to_string());
+        }
+
+        let html: String = logs.iter().rev().map(|l| {
+            let hostname = host_map.get(&l.host_id).map(|s| s.as_str()).unwrap_or("unknown");
+            crate::api::logs::render_log_row(l, hostname)
+        }).collect::<Vec<_>>().join("\n");
+
+        Html(html)
+    } else {
+        // Resolve host_id to hostname for group filtering
+        let host_filter = if let Some(host_id) = params.host_id {
+            let hosts = db::projects::list_hosts(&state.pool, pid).await.unwrap_or_default();
+            hosts.into_iter().find(|(id, _)| *id == host_id).map(|(_, name)| name)
+        } else {
+            None
+        };
+
+        let html = render_error_groups_html(&state.pool, pid, &slug, params.status, host_filter, params.search).await;
+        Html(html)
+    }
+}
+
+pub async fn error_group_detail(
+    State(state): State<AppState>,
+    Path((slug, fingerprint)): Path<(String, String)>,
+) -> impl IntoResponse {
+    let pool_projects = db::projects::list_projects(&state.pool).await.unwrap_or_default();
+    let project_id = pool_projects.iter().find(|(_, _, s)| s == &slug).map(|(id, _, _)| *id);
+
+    let Some(pid) = project_id else {
+        return Html(String::new());
+    };
+
     let hosts = db::projects::list_hosts(&state.pool, pid).await.unwrap_or_default();
     let host_map: std::collections::HashMap<Uuid, String> = hosts.into_iter().collect();
 
-    let query = db::logs::LogQuery {
-        project_id: pid,
-        level: Some("error".to_string()),
-        host_id: params.host_id,
-        search: params.search,
-        limit: 100,
-        before: None,
-    };
+    let entries = db::errors::query_error_group_entries(&state.pool, pid, &fingerprint, 20)
+        .await
+        .unwrap_or_default();
 
-    let logs = db::logs::query_logs(&state.pool, &query).await.unwrap_or_default();
-    if logs.is_empty() {
-        return Html(r#"<div class="text-center py-12 opacity-60">
-            <p>No matching errors found.</p>
-        </div>"#.to_string());
+    if entries.is_empty() {
+        return Html(r#"<div class="text-xs opacity-60 p-2">No individual occurrences found.</div>"#.to_string());
     }
 
-    let html: String = logs.iter().rev().map(|l| {
+    let html: String = entries.iter().map(|l| {
         let hostname = host_map.get(&l.host_id).map(|s| s.as_str()).unwrap_or("unknown");
         crate::api::logs::render_log_row(l, hostname)
     }).collect::<Vec<_>>().join("\n");
 
+    Html(format!(r#"<div class="border border-base-300 rounded mt-1 max-h-96 overflow-y-auto">{}</div>"#, html))
+}
+
+#[derive(Deserialize)]
+#[allow(dead_code)]
+pub struct ErrorGroupActionQuery {
+    #[serde(default, deserialize_with = "empty_string_as_none_uuid")]
+    host_id: Option<Uuid>,
+    #[serde(default, deserialize_with = "empty_string_as_none")]
+    search: Option<String>,
+    #[serde(default, deserialize_with = "empty_string_as_none")]
+    view: Option<String>,
+    #[serde(default, deserialize_with = "empty_string_as_none")]
+    status: Option<String>,
+}
+
+pub async fn error_group_action(
+    State(state): State<AppState>,
+    Path((slug, group_id, action)): Path<(String, String, String)>,
+    Query(params): Query<ErrorGroupActionQuery>,
+) -> impl IntoResponse {
+    let pool_projects = db::projects::list_projects(&state.pool).await.unwrap_or_default();
+    let project_id = pool_projects.iter().find(|(_, _, s)| s == &slug).map(|(id, _, _)| *id);
+
+    let Some(pid) = project_id else {
+        return Html(String::new());
+    };
+
+    if let Ok(gid) = group_id.parse::<Uuid>() {
+        let new_status = match action.as_str() {
+            "resolve" => "resolved",
+            "ignore" => "ignored",
+            "reopen" => "active",
+            _ => "active",
+        };
+        let _ = db::errors::update_error_group_status(&state.pool, gid, new_status).await;
+    }
+
+    // Re-render the list
+    let host_filter = if let Some(host_id) = params.host_id {
+        let hosts = db::projects::list_hosts(&state.pool, pid).await.unwrap_or_default();
+        hosts.into_iter().find(|(id, _)| *id == host_id).map(|(_, name)| name)
+    } else {
+        None
+    };
+
+    let html = render_error_groups_html(&state.pool, pid, &slug, params.status, host_filter, params.search).await;
     Html(html)
 }
 

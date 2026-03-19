@@ -1,14 +1,23 @@
 <!-- Errors Header -->
 <div class="p-4 border-b border-base-300 flex items-center justify-between">
     <h2 class="text-lg font-bold">Errors - {{ project_name }}</h2>
+    <div class="btn-group">
+        <button id="btn-grouped" class="btn btn-xs" onclick="setView('grouped')"
+                data-active-class="btn-primary">Grouped</button>
+        <button id="btn-flat" class="btn btn-xs" onclick="setView('flat')"
+                data-active-class="btn-primary">Flat</button>
+    </div>
 </div>
+
+<!-- Hidden view mode input -->
+<input type="hidden" id="view-mode" name="view" value="{{ view_mode }}" />
 
 <!-- Filters -->
 <div class="p-2 border-b border-base-300 flex items-center gap-2 flex-wrap">
     <select id="host-filter" class="select select-bordered select-xs"
             hx-get="/api/errors/{{ project_slug }}"
             hx-target="#error-entries"
-            hx-include="[id='host-filter'], [id='search-filter']"
+            hx-include="[id='host-filter'], [id='search-filter'], [id='view-mode'], [id='status-filter']"
             name="host_id">
         <option value="">All Hosts</option>
         {% for h in hosts %}
@@ -16,18 +25,62 @@
         {% endfor %}
     </select>
 
+    <select id="status-filter" class="select select-bordered select-xs"
+            hx-get="/api/errors/{{ project_slug }}"
+            hx-target="#error-entries"
+            hx-include="[id='host-filter'], [id='search-filter'], [id='view-mode'], [id='status-filter']"
+            name="status">
+        <option value="">All Statuses</option>
+        <option value="active">Active</option>
+        <option value="resolved">Resolved</option>
+        <option value="ignored">Ignored</option>
+    </select>
+
     <input id="search-filter" type="text" placeholder="Search errors..."
            class="input input-bordered input-xs w-64"
            name="search"
            hx-get="/api/errors/{{ project_slug }}"
            hx-target="#error-entries"
-           hx-include="[id='host-filter'], [id='search-filter']"
+           hx-include="[id='host-filter'], [id='search-filter'], [id='view-mode'], [id='status-filter']"
            hx-trigger="keyup changed delay:300ms" />
 </div>
 
-<!-- Errors Table -->
+<!-- Errors Content -->
 <div class="flex-1 overflow-y-auto p-4">
     <div id="error-entries">
         {{ errors_html|safe }}
     </div>
 </div>
+
+<script>
+function setView(mode) {
+    document.getElementById('view-mode').value = mode;
+    var btnGrouped = document.getElementById('btn-grouped');
+    var btnFlat = document.getElementById('btn-flat');
+    if (mode === 'grouped') {
+        btnGrouped.classList.add('btn-primary');
+        btnFlat.classList.remove('btn-primary');
+    } else {
+        btnFlat.classList.add('btn-primary');
+        btnGrouped.classList.remove('btn-primary');
+    }
+    htmx.ajax('GET', '/api/errors/{{ project_slug }}', {
+        target: '#error-entries',
+        values: {
+            view: mode,
+            host_id: document.getElementById('host-filter').value,
+            search: document.getElementById('search-filter').value,
+            status: document.getElementById('status-filter').value
+        }
+    });
+}
+// Initialize button state
+(function() {
+    var mode = document.getElementById('view-mode').value;
+    if (mode === 'grouped') {
+        document.getElementById('btn-grouped').classList.add('btn-primary');
+    } else {
+        document.getElementById('btn-flat').classList.add('btn-primary');
+    }
+})();
+</script>

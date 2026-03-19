@@ -119,6 +119,8 @@ fn create_router(state: AppState) -> axum::Router {
         .route("/api/logs/{slug}", get(web::logs_data))
         .route("/api/traces/{slug}", get(web::traces_data))
         .route("/api/errors/{slug}", get(web::errors_data))
+        .route("/api/errors/{slug}/group/{fingerprint}", get(web::error_group_detail))
+        .route("/api/errors/{slug}/group/{group_id}/{action}", post(web::error_group_action))
         .route("/api/metrics/{slug}/timeseries", get(web::metrics_timeseries_api));
 
     axum::Router::new()

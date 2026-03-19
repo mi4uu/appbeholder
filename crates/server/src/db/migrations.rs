@@ -19,6 +19,7 @@ pub async fn run_migrations(pool: &Pool) -> Result<(), Box<dyn std::error::Error
         ("003_create_log_entries", include_str!("../../migrations/003_create_log_entries.sql")),
         ("004_create_spans", include_str!("../../migrations/004_create_spans.sql")),
         ("005_create_metrics", include_str!("../../migrations/005_create_metrics.sql")),
+        ("006_create_error_groups", include_str!("../../migrations/006_create_error_groups.sql")),
     ];
 
     for (name, sql) in &migrations {

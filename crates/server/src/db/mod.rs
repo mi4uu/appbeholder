@@ -3,6 +3,7 @@ pub mod logs;
 pub mod projects;
 pub mod spans;
 pub mod metrics;
+pub mod errors;
 
 use deadpool_postgres::{Config, Pool, Runtime};
 use tokio_postgres::NoTls;

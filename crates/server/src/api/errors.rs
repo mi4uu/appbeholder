@@ -28,7 +28,7 @@ pub struct ErrorResponse {
     pub status: String,
 }
 
-fn compute_fingerprint(message: &str, stack_trace: &Option<String>) -> String {
+pub fn compute_fingerprint(message: &str, stack_trace: &Option<String>) -> String {
     let normalized = normalize_message(message);
     let first_frame = stack_trace
         .as_ref()
@@ -41,7 +41,7 @@ fn compute_fingerprint(message: &str, stack_trace: &Option<String>) -> String {
     hex::encode(hasher.finalize())
 }
 
-fn normalize_message(msg: &str) -> String {
+pub fn normalize_message(msg: &str) -> String {
     let mut result = String::with_capacity(msg.len());
     let mut in_number = false;
 
@@ -95,12 +95,15 @@ pub async fn ingest_error(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let fingerprint = compute_fingerprint(&req.message, &req.stack_trace);
+    let fingerprint_clone = fingerprint.clone();
+    let timestamp = req.timestamp.unwrap_or_else(Utc::now);
+    let message_for_group = req.message.clone();
 
     let entry = LogEntry {
         id: Uuid::new_v4(),
         project_id,
         host_id,
-        timestamp: req.timestamp.unwrap_or_else(Utc::now),
+        timestamp,
         level: "error".to_string(),
         message: req.message,
         source: req.source.unwrap_or_else(|| "backend".to_string()),
@@ -114,6 +117,10 @@ pub async fn ingest_error(
     insert_log(&state.pool, &entry)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let _ = db::errors::upsert_error_group(
+        &state.pool, project_id, &fingerprint_clone, &message_for_group, &hostname, timestamp,
+    ).await;
 
     // Publish to SSE (reuse log rendering from api::logs)
     let html = crate::api::logs::render_log_row(&entry, &hostname);
