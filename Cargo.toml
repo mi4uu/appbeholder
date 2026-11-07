@@ -1,3 +1,6 @@
+[workspace.package]
+license = "AGPL-3.0-or-later"
+
 [workspace]
 members = ["crates/server", "crates/agent"]
 resolver = "3"
